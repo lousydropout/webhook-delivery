@@ -54,5 +54,4 @@ Thumbs.db
 *.log
 
 # Project-specific
-thoughts/
 .claude/
