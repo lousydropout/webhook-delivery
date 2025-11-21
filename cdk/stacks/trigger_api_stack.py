@@ -5,7 +5,8 @@ from aws_cdk import (
     aws_apigateway as apigateway,
     Duration,
     RemovalPolicy,
-    CfnOutput
+    CfnOutput,
+    BundlingOptions
 )
 from constructs import Construct
 
@@ -64,20 +65,34 @@ class TriggerApiStack(Stack):
             projection_type=dynamodb.ProjectionType.ALL
         )
 
-        # Lambda Function for API (placeholder that returns 404 for now)
+        # Lambda Layer for Python dependencies
+        self.dependencies_layer = lambda_.LayerVersion(
+            self,
+            "DependenciesLayer",
+            code=lambda_.Code.from_asset(
+                "../",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_11.bundling_image,
+                    command=[
+                        "bash", "-c",
+                        "pip install -r requirements.txt -t /asset-output/python && " +
+                        "cp -r /asset-input/src /asset-output/python/"
+                    ]
+                )
+            ),
+            compatible_runtimes=[lambda_.Runtime.PYTHON_3_11],
+            description="FastAPI, Mangum, Boto3, Pydantic"
+        )
+
+        # Lambda Function for API (FastAPI application)
         self.api_lambda = lambda_.Function(
             self,
             "ApiLambda",
             function_name="TriggerApi-ApiHandler",
             runtime=lambda_.Runtime.PYTHON_3_11,
-            handler="index.handler",
-            code=lambda_.Code.from_inline("""
-def handler(event, context):
-    return {
-        'statusCode': 404,
-        'body': '{"message": "API not yet implemented"}'
-    }
-"""),
+            handler="main.handler",
+            code=lambda_.Code.from_asset("../src/lambda_handlers/api"),
+            layers=[self.dependencies_layer],
             timeout=Duration.seconds(30),
             memory_size=512,
             environment={
