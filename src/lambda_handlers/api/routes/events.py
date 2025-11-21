@@ -3,10 +3,10 @@ import uuid
 import time
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from auth import verify_api_key
-from models import EventCreateRequest, EventResponse
+from models import EventCreateRequest, EventResponse, EventDetail, EventListResponse
 
 router = APIRouter(prefix="/v1/events", tags=["events"])
 
@@ -54,3 +54,107 @@ async def create_event(
         created_at=timestamp,
         status="undelivered"
     )
+
+
+@router.get("", response_model=EventListResponse)
+async def list_events(
+    status: Optional[str] = None,
+    limit: int = 50,
+    tenant_id: str = Depends(verify_api_key)
+):
+    """
+    List events for the authenticated tenant.
+
+    Query parameters:
+    - status: Filter by status ("undelivered" or "delivered")
+    - limit: Maximum number of events to return (default 50, max 100)
+    """
+    if limit > 100:
+        limit = 100
+
+    try:
+        if status:
+            # Query using GSI for status filtering
+            response = events_table.query(
+                IndexName='status-index',
+                KeyConditionExpression='gsi1pk = :tenant_id AND begins_with(gsi1sk, :status)',
+                ExpressionAttributeValues={
+                    ':tenant_id': tenant_id,
+                    ':status': f"{status}#"
+                },
+                Limit=limit,
+                ScanIndexForward=True  # Oldest first
+            )
+        else:
+            # Query main table for all events
+            response = events_table.query(
+                KeyConditionExpression='pk = :tenant_id',
+                ExpressionAttributeValues={
+                    ':tenant_id': tenant_id
+                },
+                Limit=limit,
+                ScanIndexForward=False  # Newest first
+            )
+
+        items = response.get('Items', [])
+
+        events = [
+            EventDetail(
+                id=item['event_id'],
+                created_at=item['timestamp'],
+                status=item['status'],
+                payload=item['payload']
+            )
+            for item in items
+        ]
+
+        return EventListResponse(events=events)
+
+    except Exception as e:
+        print(f"Error listing events: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to list events"
+        )
+
+
+@router.get("/{event_id}", response_model=EventDetail)
+async def get_event(
+    event_id: str,
+    tenant_id: str = Depends(verify_api_key)
+):
+    """
+    Retrieve a single event by ID.
+
+    Returns 404 if event doesn't exist or doesn't belong to tenant.
+    """
+    try:
+        response = events_table.get_item(
+            Key={
+                'pk': tenant_id,
+                'sk': event_id
+            }
+        )
+
+        item = response.get('Item')
+        if not item:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Event {event_id} not found"
+            )
+
+        return EventDetail(
+            id=item['event_id'],
+            created_at=item['timestamp'],
+            status=item['status'],
+            payload=item['payload']
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error retrieving event: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve event"
+        )
