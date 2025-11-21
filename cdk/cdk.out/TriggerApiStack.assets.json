@@ -1,0 +1,20 @@
+{
+  "version": "35.0.0",
+  "files": {
+    "dc8a5862b08692fb9eca219f16252bc5ff1d52b912a7ddd844a90f61a9cb8e74": {
+      "source": {
+        "path": "TriggerApiStack.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-us-east-1": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1",
+          "objectKey": "dc8a5862b08692fb9eca219f16252bc5ff1d52b912a7ddd844a90f61a9cb8e74.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
