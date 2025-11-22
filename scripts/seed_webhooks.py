@@ -7,8 +7,8 @@ import uuid
 import time
 import sys
 
-dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table('Vincent-TriggerApi-TenantApiKeys')
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table("Vincent-TriggerApi-TenantApiKeys")
 
 
 def generate_api_key(tenant_name: str) -> str:
@@ -26,19 +26,19 @@ def seed_tenants():
     """Seed 3 test tenants with webhook configs"""
     tenants = [
         {
-            'name': 'acme',
-            'display': 'Acme Corp',
-            'targetUrl': 'https://webhook.site/unique-acme-id',  # Replace with real endpoint
+            "name": "acme",
+            "display": "Acme Corp",
+            "targetUrl": "https://webhook.site/unique-acme-id",  # Replace with real endpoint
         },
         {
-            'name': 'globex',
-            'display': 'Globex Inc',
-            'targetUrl': 'https://webhook.site/unique-globex-id',
+            "name": "globex",
+            "display": "Globex Inc",
+            "targetUrl": "https://webhook.site/unique-globex-id",
         },
         {
-            'name': 'initech',
-            'display': 'Initech LLC',
-            'targetUrl': 'https://webhook.site/unique-initech-id',
+            "name": "initech",
+            "display": "Initech LLC",
+            "targetUrl": "https://webhook.site/unique-initech-id",
         },
     ]
 
@@ -48,17 +48,17 @@ def seed_tenants():
     created = []
 
     for tenant in tenants:
-        api_key = generate_api_key(tenant['name'])
+        api_key = generate_api_key(tenant["name"])
         webhook_secret = generate_webhook_secret()
 
         item = {
-            'apiKey': api_key,
-            'tenantId': tenant['name'],
-            'targetUrl': tenant['targetUrl'],
-            'webhookSecret': webhook_secret,
-            'isActive': True,
-            'createdAt': str(int(time.time())),
-            'displayName': tenant['display'],
+            "apiKey": api_key,
+            "tenantId": tenant["name"],
+            "targetUrl": tenant["targetUrl"],
+            "webhookSecret": webhook_secret,
+            "isActive": True,
+            "createdAt": str(int(time.time())),
+            "displayName": tenant["display"],
         }
 
         try:
@@ -69,11 +69,13 @@ def seed_tenants():
             print(f"  Target URL: {tenant['targetUrl']}")
             print()
 
-            created.append({
-                'tenant': tenant['name'],
-                'apiKey': api_key,
-                'webhookSecret': webhook_secret,
-            })
+            created.append(
+                {
+                    "tenant": tenant["name"],
+                    "apiKey": api_key,
+                    "webhookSecret": webhook_secret,
+                }
+            )
         except Exception as e:
             print(f"✗ Error: {e}")
             sys.exit(1)
@@ -87,9 +89,9 @@ def seed_tenants():
         print(f"curl -X POST https://hooks.vincentchan.cloud/events \\")
         print(f"  -H 'Authorization: Bearer {item['apiKey']}' \\")
         print(f"  -H 'Content-Type: application/json' \\")
-        print(f"  -d '{{\"test\": \"data\"}}'")
+        print(f'  -d \'{{"test": "data"}}\'')
         print()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     seed_tenants()

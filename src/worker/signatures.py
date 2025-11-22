@@ -16,9 +16,7 @@ def generate_stripe_signature(payload: str, secret: str) -> str:
 
     # HMAC-SHA256
     signature = hmac.new(
-        secret.encode('utf-8'),
-        signed_payload.encode('utf-8'),
-        hashlib.sha256
+        secret.encode("utf-8"), signed_payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
     return f"t={timestamp},v1={signature}"

@@ -5,10 +5,7 @@ from signatures import generate_stripe_signature
 
 
 def deliver_webhook(
-    target_url: str,
-    payload: Dict[str, Any],
-    webhook_secret: str,
-    timeout: int = 30
+    target_url: str, payload: Dict[str, Any], webhook_secret: str, timeout: int = 30
 ) -> Tuple[bool, int, str]:
     """
     Deliver webhook with HMAC signature.
@@ -19,8 +16,8 @@ def deliver_webhook(
     signature = generate_stripe_signature(payload_json, webhook_secret)
 
     headers = {
-        'Content-Type': 'application/json',
-        'Stripe-Signature': signature,
+        "Content-Type": "application/json",
+        "Stripe-Signature": signature,
     }
 
     try:

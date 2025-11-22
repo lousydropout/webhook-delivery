@@ -2,10 +2,10 @@ import os
 import json
 import boto3
 
-sqs = boto3.client('sqs')
+sqs = boto3.client("sqs")
 
-DLQ_URL = os.environ['EVENTS_DLQ_URL']
-MAIN_QUEUE_URL = os.environ['EVENTS_QUEUE_URL']
+DLQ_URL = os.environ["EVENTS_DLQ_URL"]
+MAIN_QUEUE_URL = os.environ["EVENTS_QUEUE_URL"]
 
 
 def main(event, context):
@@ -15,8 +15,8 @@ def main(event, context):
     Reads messages from DLQ and sends them back to main queue.
     Use with caution - only requeue if confident the issue is resolved.
     """
-    batch_size = event.get('batchSize', 10)
-    max_messages = event.get('maxMessages', 100)
+    batch_size = event.get("batchSize", 10)
+    max_messages = event.get("maxMessages", 100)
 
     requeued_count = 0
     failed_count = 0
@@ -29,15 +29,15 @@ def main(event, context):
             WaitTimeSeconds=1,
         )
 
-        messages = response.get('Messages', [])
+        messages = response.get("Messages", [])
         if not messages:
             break
 
         for message in messages:
             try:
                 # Validate message has required fields
-                body = json.loads(message['Body'])
-                if 'tenantId' not in body or 'eventId' not in body:
+                body = json.loads(message["Body"])
+                if "tenantId" not in body or "eventId" not in body:
                     print(f"Invalid message format: {body}")
                     failed_count += 1
                     continue
@@ -45,13 +45,13 @@ def main(event, context):
                 # Requeue to main queue
                 sqs.send_message(
                     QueueUrl=MAIN_QUEUE_URL,
-                    MessageBody=message['Body'],
+                    MessageBody=message["Body"],
                 )
 
                 # Delete from DLQ
                 sqs.delete_message(
                     QueueUrl=DLQ_URL,
-                    ReceiptHandle=message['ReceiptHandle'],
+                    ReceiptHandle=message["ReceiptHandle"],
                 )
 
                 requeued_count += 1
@@ -62,9 +62,11 @@ def main(event, context):
                 failed_count += 1
 
     return {
-        'statusCode': 200,
-        'body': json.dumps({
-            'requeued': requeued_count,
-            'failed': failed_count,
-        })
+        "statusCode": 200,
+        "body": json.dumps(
+            {
+                "requeued": requeued_count,
+                "failed": failed_count,
+            }
+        ),
     }

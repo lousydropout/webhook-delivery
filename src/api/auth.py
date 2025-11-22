@@ -6,8 +6,8 @@ from typing import Optional, Dict
 
 security = HTTPBearer()
 
-dynamodb = boto3.resource('dynamodb')
-api_keys_table = dynamodb.Table(os.environ['TENANT_API_KEYS_TABLE'])
+dynamodb = boto3.resource("dynamodb")
+api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
 
 
 def get_tenant_from_api_key(api_key: str) -> Optional[Dict]:
@@ -22,10 +22,10 @@ def get_tenant_from_api_key(api_key: str) -> Optional[Dict]:
     }
     """
     try:
-        response = api_keys_table.get_item(Key={'apiKey': api_key})
-        item = response.get('Item')
+        response = api_keys_table.get_item(Key={"apiKey": api_key})
+        item = response.get("Item")
 
-        if not item or not item.get('isActive'):
+        if not item or not item.get("isActive"):
             return None
 
         return item
@@ -35,7 +35,7 @@ def get_tenant_from_api_key(api_key: str) -> Optional[Dict]:
 
 
 async def verify_api_key(
-    credentials: HTTPAuthorizationCredentials = Security(security)
+    credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> Dict:
     """FastAPI dependency that validates API key and returns tenant info"""
     api_key = credentials.credentials

@@ -2,64 +2,55 @@
 set -e
 
 echo "=========================================="
-echo "Deploying Trigger Ingestion API"
+echo "Deploying Webhook Delivery System"
 echo "=========================================="
 echo ""
 
 # Check prerequisites
 if ! command -v aws &> /dev/null; then
-    echo "Error: AWS CLI not found. Please install it first."
+    echo "Error: AWS CLI not found"
     exit 1
 fi
 
-if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 not found. Please install it first."
-    exit 1
-fi
-
-# Install Python dependencies
-echo "1. Installing Python dependencies..."
-pip install -r requirements.txt
-pip install -r cdk/requirements.txt
-echo "   ✓ Dependencies installed"
-echo ""
-
-# Bootstrap CDK (if needed)
-echo "2. Bootstrapping CDK (if needed)..."
+# Install CDK dependencies
+echo "1. Installing CDK dependencies..."
 cd cdk
-cdk bootstrap || echo "   (Already bootstrapped)"
+pip install -r requirements.txt
 echo "   ✓ CDK ready"
 echo ""
 
-# Deploy CDK stack
+# Bootstrap if needed
+echo "2. Bootstrapping CDK..."
+cdk bootstrap || echo "   (Already bootstrapped)"
+echo ""
+
+# Deploy stack
 echo "3. Deploying infrastructure..."
 cdk deploy --require-approval never
-echo "   ✓ Infrastructure deployed"
+echo "   ✓ Stack deployed"
 echo ""
 
 cd ..
 
 # Seed tenants
 echo "4. Seeding test tenants..."
-python scripts/seed_tenants.py
-echo "   ✓ Tenants seeded"
+python scripts/seed_webhooks.py
 echo ""
 
-# Get API URL
-API_URL=$(aws cloudformation describe-stacks \
-    --stack-name TriggerApiStack \
-    --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' \
+# Get custom domain
+CUSTOM_DOMAIN=$(aws cloudformation describe-stacks \
+    --stack-name WebhookDeliveryStack \
+    --query 'Stacks[0].Outputs[?OutputKey==`CustomDomainUrl`].OutputValue' \
     --output text)
 
 echo "=========================================="
 echo "Deployment Complete!"
 echo "=========================================="
 echo ""
-echo "API URL: $API_URL"
+echo "API URL: $CUSTOM_DOMAIN"
 echo ""
 echo "Next steps:"
-echo "1. Export tenant API keys (see output from seed script above)"
-echo "2. Test with: curl $API_URL/health"
-echo "3. Import Postman collection from docs/postman_collection.json"
-echo "4. Run mock worker: python src/worker/mock_worker.py"
+echo "1. Configure webhook receiver endpoints for test tenants"
+echo "2. Test event ingestion: curl -X POST $CUSTOM_DOMAIN/events -H 'Authorization: Bearer <api-key>' -d '{\"test\":\"data\"}'"
+echo "3. Monitor CloudWatch Logs for delivery status"
 echo ""

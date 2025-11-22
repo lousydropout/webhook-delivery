@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 class EventCreateRequest(BaseModel):
     """Free-form JSON payload for event creation"""
+
     class Config:
         extra = "allow"
 

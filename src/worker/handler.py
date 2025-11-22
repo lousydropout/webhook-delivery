@@ -12,10 +12,10 @@ def main(event, context):
     - Max receive count: 5
     - Backoff: ~1min, 2min, 4min, 8min, 16min
     """
-    for record in event['Records']:
-        message_body = json.loads(record['body'])
-        tenant_id = message_body['tenantId']
-        event_id = message_body['eventId']
+    for record in event["Records"]:
+        message_body = json.loads(record["body"])
+        tenant_id = message_body["tenantId"]
+        event_id = message_body["eventId"]
 
         # Get event details
         event_item = get_event(tenant_id, event_id)
@@ -23,9 +23,9 @@ def main(event, context):
             print(f"Event not found: {tenant_id}/{event_id}")
             continue
 
-        target_url = event_item['targetUrl']
-        payload = event_item['payload']
-        current_attempts = event_item.get('attempts', 0)
+        target_url = event_item["targetUrl"]
+        payload = event_item["payload"]
+        current_attempts = event_item.get("attempts", 0)
 
         # Get webhook secret from tenant config
         tenant = get_tenant_by_id(tenant_id)
@@ -33,7 +33,7 @@ def main(event, context):
             print(f"Tenant not found: {tenant_id}")
             continue
 
-        webhook_secret = tenant['webhookSecret']
+        webhook_secret = tenant["webhookSecret"]
 
         # Attempt delivery
         success, status_code, error_msg = deliver_webhook(
@@ -44,16 +44,14 @@ def main(event, context):
 
         if success:
             # Mark as DELIVERED
-            update_event_status(tenant_id, event_id, 'DELIVERED', new_attempts)
+            update_event_status(tenant_id, event_id, "DELIVERED", new_attempts)
             print(f"✓ Delivered: {tenant_id}/{event_id} (status={status_code})")
         else:
             # Mark as FAILED (will retry via SQS or go to DLQ)
-            update_event_status(
-                tenant_id, event_id, 'FAILED', new_attempts, error_msg
-            )
+            update_event_status(tenant_id, event_id, "FAILED", new_attempts, error_msg)
             print(f"✗ Failed: {tenant_id}/{event_id} - {error_msg}")
 
             # Re-raise to trigger SQS retry
             raise Exception(f"Webhook delivery failed: {error_msg}")
 
-    return {'statusCode': 200}
+    return {"statusCode": 200}
