@@ -5,6 +5,7 @@ from datetime import datetime
 
 class EventCreateRequest(BaseModel):
     """Free-form JSON payload for event creation"""
+
     class Config:
         extra = "allow"  # Allow arbitrary fields
 

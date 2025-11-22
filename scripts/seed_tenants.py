@@ -18,13 +18,13 @@ def generate_api_key(tenant_name: str) -> str:
 
 def seed_tenants():
     """Seed 3 test tenants"""
-    dynamodb = boto3.resource('dynamodb')
-    table = dynamodb.Table('TriggerApi-TenantApiKeys')
+    dynamodb = boto3.resource("dynamodb")
+    table = dynamodb.Table("TriggerApi-TenantApiKeys")
 
     tenants = [
-        {'name': 'acme', 'display': 'Acme Corp'},
-        {'name': 'globex', 'display': 'Globex Inc'},
-        {'name': 'initech', 'display': 'Initech LLC'}
+        {"name": "acme", "display": "Acme Corp"},
+        {"name": "globex", "display": "Globex Inc"},
+        {"name": "initech", "display": "Initech LLC"},
     ]
 
     print("Seeding test tenants...")
@@ -33,16 +33,16 @@ def seed_tenants():
     created_keys = []
 
     for tenant in tenants:
-        tenant_name = tenant['name']
+        tenant_name = tenant["name"]
         api_key = generate_api_key(tenant_name)
 
         item = {
-            'pk': api_key,
-            'sk': 'meta',
-            'tenant_id': tenant_name,
-            'status': 'active',
-            'created_at': int(time.time() * 1000),
-            'display_name': tenant['display']
+            "pk": api_key,
+            "sk": "meta",
+            "tenant_id": tenant_name,
+            "status": "active",
+            "created_at": int(time.time() * 1000),
+            "display_name": tenant["display"],
         }
 
         try:
@@ -52,10 +52,7 @@ def seed_tenants():
             print(f"  API Key: {api_key}")
             print()
 
-            created_keys.append({
-                'tenant': tenant_name,
-                'key': api_key
-            })
+            created_keys.append({"tenant": tenant_name, "key": api_key})
         except Exception as e:
             print(f"✗ Error creating tenant {tenant_name}: {e}")
             sys.exit(1)
@@ -74,5 +71,5 @@ def seed_tenants():
     print(f"export TENANT_NAMES='{','.join([i['tenant'] for i in created_keys])}'")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     seed_tenants()

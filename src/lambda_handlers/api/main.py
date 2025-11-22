@@ -6,7 +6,7 @@ from .routes import events, health
 app = FastAPI(
     title="Trigger Ingestion API",
     description="Multi-tenant event ingestion API",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # Include routers

@@ -14,12 +14,12 @@ from typing import Optional
 
 class MockWorker:
     def __init__(self, api_url: str, api_key: str, tenant_name: str):
-        self.api_url = api_url.rstrip('/')
+        self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.tenant_name = tenant_name
         self.headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
         }
 
     def get_undelivered_events(self):
@@ -28,7 +28,7 @@ class MockWorker:
             url = f"{self.api_url}/v1/events?status=undelivered&limit=10"
             response = requests.get(url, headers=self.headers, timeout=10)
             response.raise_for_status()
-            return response.json().get('events', [])
+            return response.json().get("events", [])
         except requests.exceptions.RequestException as e:
             print(f"[{self.tenant_name}] Error fetching events: {e}")
             return []
@@ -38,8 +38,8 @@ class MockWorker:
         Simulate event processing.
         In a real system, this would trigger a Zap, send webhooks, etc.
         """
-        event_id = event['id']
-        payload = event['payload']
+        event_id = event["id"]
+        payload = event["payload"]
 
         print(f"[{self.tenant_name}] Processing event {event_id}")
         print(f"[{self.tenant_name}]   Payload: {payload}")
@@ -73,11 +73,13 @@ class MockWorker:
                 events = self.get_undelivered_events()
 
                 if events:
-                    print(f"[{self.tenant_name}] Found {len(events)} undelivered event(s)")
+                    print(
+                        f"[{self.tenant_name}] Found {len(events)} undelivered event(s)"
+                    )
 
                     for event in events:
                         self.process_event(event)
-                        self.acknowledge_event(event['id'])
+                        self.acknowledge_event(event["id"])
 
                     print()
 
@@ -102,32 +104,34 @@ def main():
     - TENANT_NAMES: Comma-separated list of tenant names (optional, for logging)
     - POLL_INTERVAL: Seconds between polls (default: 5)
     """
-    api_url = os.environ.get('API_URL')
+    api_url = os.environ.get("API_URL")
     if not api_url:
         print("Error: API_URL environment variable required")
         sys.exit(1)
 
     # Single-tenant mode
-    api_key = os.environ.get('API_KEY')
+    api_key = os.environ.get("API_KEY")
     if api_key:
-        tenant_name = os.environ.get('TENANT_NAME', 'default')
-        poll_interval = int(os.environ.get('POLL_INTERVAL', '5'))
+        tenant_name = os.environ.get("TENANT_NAME", "default")
+        poll_interval = int(os.environ.get("POLL_INTERVAL", "5"))
 
         worker = MockWorker(api_url, api_key, tenant_name)
         worker.run(poll_interval)
 
     # Multi-tenant mode
-    api_keys_str = os.environ.get('API_KEYS')
+    api_keys_str = os.environ.get("API_KEYS")
     if api_keys_str:
-        api_keys = [k.strip() for k in api_keys_str.split(',')]
-        tenant_names_str = os.environ.get('TENANT_NAMES', '')
-        tenant_names = [n.strip() for n in tenant_names_str.split(',')] if tenant_names_str else []
+        api_keys = [k.strip() for k in api_keys_str.split(",")]
+        tenant_names_str = os.environ.get("TENANT_NAMES", "")
+        tenant_names = (
+            [n.strip() for n in tenant_names_str.split(",")] if tenant_names_str else []
+        )
 
         # Pad tenant names if not enough provided
         while len(tenant_names) < len(api_keys):
-            tenant_names.append(f'tenant-{len(tenant_names) + 1}')
+            tenant_names.append(f"tenant-{len(tenant_names) + 1}")
 
-        poll_interval = int(os.environ.get('POLL_INTERVAL', '5'))
+        poll_interval = int(os.environ.get("POLL_INTERVAL", "5"))
 
         print("Starting workers for multiple tenants...")
         print()
@@ -154,5 +158,5 @@ def main():
     sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
