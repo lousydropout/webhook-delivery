@@ -1,0 +1,159 @@
+{
+  "info": {
+    "name": "Trigger Ingestion API",
+    "description": "Multi-tenant event ingestion API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "api_url",
+      "value": "https://your-api-gateway-url",
+      "type": "string"
+    },
+    {
+      "key": "api_key",
+      "value": "tenant_acme_live_xxx",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{api_url}}/health",
+          "host": ["{{api_url}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Create Event",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event_type\": \"customer.created\",\n  \"customer_id\": \"cust_123\",\n  \"email\": \"alice@example.com\"\n}"
+        },
+        "url": {
+          "raw": "{{api_url}}/v1/events",
+          "host": ["{{api_url}}"],
+          "path": ["v1", "events"]
+        }
+      }
+    },
+    {
+      "name": "List Events (Undelivered)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{api_url}}/v1/events?status=undelivered&limit=50",
+          "host": ["{{api_url}}"],
+          "path": ["v1", "events"],
+          "query": [
+            {
+              "key": "status",
+              "value": "undelivered"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Event by ID",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{api_url}}/v1/events/evt_12345678",
+          "host": ["{{api_url}}"],
+          "path": ["v1", "events", "evt_12345678"]
+        }
+      }
+    },
+    {
+      "name": "Acknowledge Event",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{api_url}}/v1/events/evt_12345678/ack",
+          "host": ["{{api_url}}"],
+          "path": ["v1", "events", "evt_12345678", "ack"]
+        }
+      }
+    },
+    {
+      "name": "Delete Event",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{api_url}}/v1/events/evt_12345678",
+          "host": ["{{api_url}}"],
+          "path": ["v1", "events", "evt_12345678"]
+        }
+      }
+    },
+    {
+      "name": "List All Events",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{api_key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{api_url}}/v1/events?limit=100",
+          "host": ["{{api_url}}"],
+          "path": ["v1", "events"],
+          "query": [
+            {
+              "key": "limit",
+              "value": "100"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
