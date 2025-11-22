@@ -1,150 +1,80 @@
-# Zapier Trigger Ingestion API
+# Webhook Delivery System
 
-Multi-tenant event ingestion API built with FastAPI, AWS Lambda, and DynamoDB. Simulates Zapier's Triggers API architecture.
+Serverless multi-tenant webhook delivery platform with SQS-driven async processing, automatic retries, and Stripe-style HMAC signatures.
 
 ## Architecture
 
-- **API Framework**: FastAPI + Mangum (serverless adapter)
-- **Compute**: AWS Lambda
-- **Storage**: DynamoDB with GSI for efficient queries
-- **API Gateway**: AWS API Gateway (REST API)
-- **Infrastructure**: AWS CDK (Python)
-- **Authentication**: API key-based multi-tenant isolation
+- **API**: FastAPI on Lambda (event ingestion)
+- **Queue**: SQS with DLQ for reliability
+- **Worker**: Lambda for webhook delivery
+- **Storage**: DynamoDB with TTL
+- **Domain**: hooks.vincentchan.cloud (SSL via ACM)
 
 ## Features
 
-- ✅ Multi-tenant event ingestion with tenant isolation
-- ✅ RESTful API design with proper HTTP semantics
-- ✅ Durable event storage with DynamoDB
-- ✅ Pull-based event delivery (inbox pattern)
-- ✅ Acknowledgment semantics for event lifecycle
-- ✅ Mock worker simulating Zapier's automation engine
-- ✅ Unit tests with >80% coverage
-- ✅ Single-command deployment
+- ✅ Webhook delivery with HMAC signatures
+- ✅ Automatic retries with exponential backoff
+- ✅ Dead Letter Queue with manual requeue
+- ✅ Multi-tenant isolation
+- ✅ Custom domain with SSL
+- ✅ TTL-based event cleanup (30 days)
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.11+
-- AWS CLI configured with credentials
-- Node.js 18+ (for CDK)
-
-### 1. Deploy
-
 ```bash
-chmod +x scripts/deploy.sh
+# Deploy
 ./scripts/deploy.sh
-```
 
-This will:
-- Install dependencies
-- Bootstrap CDK
-- Deploy DynamoDB tables and Lambda functions
-- Create API Gateway
-- Seed 3 test tenants
-
-### 2. Get API URL and Keys
-
-The deploy script outputs:
-- API Gateway URL
-- 3 tenant API keys (acme, globex, initech)
-
-Export them:
-```bash
-export API_URL="https://your-api-url"
-export ACME_API_KEY="tenant_acme_live_xxx"
-```
-
-### 3. Test
-
-```bash
-# Health check
-curl $API_URL/health
-
-# Create event
-curl -X POST $API_URL/v1/events \
-  -H "Authorization: Bearer $ACME_API_KEY" \
+# Send event
+curl -X POST https://hooks.vincentchan.cloud/events \
+  -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
-  -d '{"event_type":"customer.created","email":"test@example.com"}'
-
-# List undelivered events
-curl $API_URL/v1/events?status=undelivered \
-  -H "Authorization: Bearer $ACME_API_KEY"
+  -d '{"event": "user.signup", "data": {...}}'
 ```
 
-### 4. Run Mock Worker
+See [Webhook Integration Guide](docs/WEBHOOK_INTEGRATION.md) for receiver setup.
+
+## Monitoring
 
 ```bash
-export API_URL="your-api-url"
-export API_KEY="$ACME_API_KEY"
-export TENANT_NAME="acme"
-python src/worker/mock_worker.py
+# Check event status
+aws dynamodb get-item \
+  --table-name Vincent-TriggerApi-Events \
+  --key '{"tenantId": {"S": "acme"}, "eventId": {"S": "evt_123"}}'
+
+# View DLQ messages
+aws sqs receive-message \
+  --queue-url <dlq-url> \
+  --max-number-of-messages 10
 ```
 
-The worker will poll for events, process them, and acknowledge them.
+## Development
 
-## API Endpoints
+This is a complete rewrite. Old implementation removed.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/v1/events` | Create event |
-| `GET` | `/v1/events` | List events (filterable) |
-| `GET` | `/v1/events/{id}` | Get single event |
-| `POST` | `/v1/events/{id}/ack` | Acknowledge event |
-| `DELETE` | `/v1/events/{id}` | Delete event |
-
-See [docs/TESTING.md](docs/TESTING.md) for detailed testing guide.
-
-## Project Structure
-
+Project structure:
 ```
-zapier/
-├── cdk/                      # AWS CDK infrastructure
-│   ├── app.py
-│   └── stacks/
-│       └── trigger_api_stack.py
-├── src/
-│   ├── lambda_handlers/      # FastAPI application
-│   │   └── api/
-│   │       ├── main.py       # FastAPI app + Mangum handler
-│   │       ├── auth.py       # Authentication middleware
-│   │       ├── models.py     # Pydantic models
-│   │       └── routes/
-│   │           └── events.py # Event endpoints
-│   └── worker/               # Mock worker
-│       └── mock_worker.py
-├── tests/                    # Unit tests
-├── scripts/                  # Utility scripts
-│   ├── deploy.sh
-│   └── seed_tenants.py
-└── docs/                     # Documentation
-    ├── TESTING.md
-    └── postman_collection.json
+src/
+├── api/              # Event ingestion Lambda
+├── worker/           # Webhook delivery Lambda
+└── dlq_processor/    # DLQ requeue Lambda
 ```
 
 ## Testing
 
-### Unit Tests
+### Test Webhook Receiver
 
 ```bash
-pytest tests/ -v --cov=src --cov-report=html
-```
+# Install dependencies
+pip install -r tests/requirements.txt
 
-### Manual Testing
+# Run test receiver
+python tests/webhook_receiver.py
 
-Import `docs/postman_collection.json` into Postman and update variables:
-- `api_url`: Your API Gateway URL
-- `api_key`: One of the tenant API keys
+# In another terminal, expose via ngrok
+ngrok http 5000
 
-### Multi-Tenant Worker Test
-
-```bash
-export API_URL="your-api-url"
-export API_KEYS="$ACME_API_KEY,$GLOBEX_API_KEY,$INITECH_API_KEY"
-export TENANT_NAMES="acme,globex,initech"
-python src/worker/mock_worker.py
+# Update tenant targetUrl to ngrok URL, then test
 ```
 
 ## Cleanup
@@ -153,13 +83,6 @@ python src/worker/mock_worker.py
 cd cdk
 cdk destroy
 ```
-
-## Documentation
-
-- [Project Overview](project.md)
-- [DynamoDB Schema](dynamodb.md)
-- [API Endpoints](api_endpoints.md)
-- [Testing Guide](docs/TESTING.md)
 
 ## License
 
