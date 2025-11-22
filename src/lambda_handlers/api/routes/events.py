@@ -5,8 +5,8 @@ import boto3
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Dict, Any, Optional
 
-from auth import verify_api_key
-from models import EventCreateRequest, EventResponse, EventDetail, EventListResponse, AckRequest, AckResponse
+from ..auth import verify_api_key
+from ..models import EventCreateRequest, EventResponse, EventDetail, EventListResponse, AckRequest, AckResponse
 
 router = APIRouter(prefix="/v1/events", tags=["events"])
 

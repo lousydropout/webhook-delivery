@@ -1,8 +1,7 @@
 from fastapi import FastAPI
 from mangum import Mangum
 
-import routes.events as events
-import routes.health as health
+from .routes import events, health
 
 app = FastAPI(
     title="Trigger Ingestion API",
