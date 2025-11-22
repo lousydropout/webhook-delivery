@@ -1,205 +1,101 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
-from src.lambda_handlers.api.main import app
-from src.lambda_handlers.api.auth import verify_api_key
+import sys
+import os
+
+# Adjust path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'api'))
+
+# Set environment variables before importing the app
+os.environ["EVENTS_QUEUE_URL"] = "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
+os.environ["EVENTS_TABLE"] = "test-events-table"
+os.environ["TENANT_API_KEYS_TABLE"] = "test-api-keys-table"
 
 
-async def mock_verify_api_key():
-    """Mock authentication that returns test tenant"""
-    return "test_tenant"
+@pytest.fixture
+def mock_sqs():
+    """Mock SQS client"""
+    with patch("routes.sqs") as mock:
+        mock.send_message.return_value = {}
+        yield mock
+
+
+@pytest.fixture
+def mock_create_event():
+    """Mock create_event function"""
+    with patch("routes.create_event") as mock:
+        mock.return_value = "evt_test123"
+        yield mock
+
+
+@pytest.fixture
+def mock_get_tenant_from_context():
+    """Mock get_tenant_from_context to return test tenant"""
+    with patch("routes.get_tenant_from_context") as mock:
+        mock.return_value = {
+            "tenantId": "test_tenant",
+            "targetUrl": "https://example.com/webhook",
+            "webhookSecret": "test_secret",
+            "isActive": True
+        }
+        yield mock
 
 
 @pytest.fixture
 def client():
-    """FastAPI test client with dependency overrides"""
-    app.dependency_overrides[verify_api_key] = mock_verify_api_key
-    yield TestClient(app)
-    app.dependency_overrides.clear()
+    """FastAPI test client"""
+    from main import app
+    return TestClient(app)
 
 
-@pytest.fixture
-def mock_auth():
-    """Mock authentication fixture (for compatibility)"""
-    pass
-
-
-@pytest.fixture
-def mock_dynamodb():
-    """Mock DynamoDB table"""
-    with patch("src.lambda_handlers.api.routes.events.events_table") as mock_table:
-        yield mock_table
-
-
-def test_create_event(client, mock_auth, mock_dynamodb):
-    """Test event creation"""
-    mock_dynamodb.put_item.return_value = {}
-
+def test_create_event(client, mock_sqs, mock_create_event, mock_get_tenant_from_context):
+    """Test event creation with authorizer context"""
     response = client.post(
-        "/v1/events",
+        "/events",
         json={"event_type": "test.event", "data": "foo"},
-        headers={"Authorization": "Bearer test_key"},
     )
 
     assert response.status_code == 201
     data = response.json()
-    assert "id" in data
-    assert data["id"].startswith("evt_")
-    assert data["status"] == "undelivered"
-    assert "created_at" in data
+    assert data["event_id"] == "evt_test123"
+    assert data["status"] == "PENDING"
 
-
-def test_list_events_undelivered(client, mock_auth, mock_dynamodb):
-    """Test listing undelivered events"""
-    mock_dynamodb.query.return_value = {
-        "Items": [
-            {
-                "event_id": "evt_123",
-                "timestamp": 1700000000000,
-                "status": "undelivered",
-                "payload": {"test": "data"},
-            }
-        ]
-    }
-
-    response = client.get(
-        "/v1/events?status=undelivered", headers={"Authorization": "Bearer test_key"}
+    # Verify create_event was called with correct tenant_id
+    mock_create_event.assert_called_once_with(
+        "test_tenant",
+        {"event_type": "test.event", "data": "foo"},
+        "https://example.com/webhook"
     )
 
-    assert response.status_code == 200
-    data = response.json()
-    assert len(data["events"]) == 1
-    assert data["events"][0]["id"] == "evt_123"
-    assert data["events"][0]["status"] == "undelivered"
+    # Verify SQS message was sent
+    mock_sqs.send_message.assert_called_once()
+    call_args = mock_sqs.send_message.call_args
+    assert call_args[1]["QueueUrl"] == os.environ["EVENTS_QUEUE_URL"]
 
 
-def test_get_event_not_found(client, mock_auth, mock_dynamodb):
-    """Test getting non-existent event"""
-    mock_dynamodb.get_item.return_value = {}
+def test_create_event_missing_auth_context(client, mock_sqs, mock_create_event):
+    """Test event creation without authorizer context (should fail)"""
+    with patch("routes.get_tenant_from_context") as mock_context:
+        mock_context.side_effect = ValueError("Missing authorizer context")
 
-    response = client.get(
-        "/v1/events/evt_nonexistent", headers={"Authorization": "Bearer test_key"}
-    )
+        response = client.post(
+            "/events",
+            json={"event_type": "test.event", "data": "foo"},
+        )
 
-    assert response.status_code == 404
+    assert response.status_code == 401
+    assert "Authentication error" in response.json()["detail"]
 
 
-def test_acknowledge_event(client, mock_auth, mock_dynamodb):
-    """Test event acknowledgment"""
-    mock_dynamodb.get_item.return_value = {
-        "Item": {
-            "event_id": "evt_123",
-            "status": "undelivered",
-            "timestamp": 1700000000000,
-        }
-    }
-    mock_dynamodb.update_item.return_value = {}
+def test_create_event_sqs_failure(client, mock_sqs, mock_create_event, mock_get_tenant_from_context):
+    """Test event creation when SQS fails"""
+    mock_sqs.send_message.side_effect = Exception("SQS error")
 
     response = client.post(
-        "/v1/events/evt_123/ack", headers={"Authorization": "Bearer test_key"}
+        "/events",
+        json={"event_type": "test.event", "data": "foo"},
     )
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "acknowledged"
-
-
-def test_delete_event(client, mock_auth, mock_dynamodb):
-    """Test event deletion"""
-    mock_dynamodb.get_item.return_value = {"Item": {"event_id": "evt_123"}}
-    mock_dynamodb.delete_item.return_value = {}
-
-    response = client.delete(
-        "/v1/events/evt_123", headers={"Authorization": "Bearer test_key"}
-    )
-
-    assert response.status_code == 204
-
-
-def test_get_event_success(client, mock_auth, mock_dynamodb):
-    """Test getting an existing event"""
-    mock_dynamodb.get_item.return_value = {
-        "Item": {
-            "event_id": "evt_123",
-            "timestamp": 1700000000000,
-            "status": "undelivered",
-            "payload": {"test": "data"},
-        }
-    }
-
-    response = client.get(
-        "/v1/events/evt_123", headers={"Authorization": "Bearer test_key"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["id"] == "evt_123"
-    assert data["status"] == "undelivered"
-    assert data["payload"] == {"test": "data"}
-
-
-def test_list_all_events(client, mock_auth, mock_dynamodb):
-    """Test listing all events without status filter"""
-    mock_dynamodb.query.return_value = {
-        "Items": [
-            {
-                "event_id": "evt_123",
-                "timestamp": 1700000000000,
-                "status": "undelivered",
-                "payload": {"test": "data"},
-            },
-            {
-                "event_id": "evt_456",
-                "timestamp": 1700000001000,
-                "status": "delivered",
-                "payload": {"test": "data2"},
-            },
-        ]
-    }
-
-    response = client.get("/v1/events", headers={"Authorization": "Bearer test_key"})
-
-    assert response.status_code == 200
-    data = response.json()
-    assert len(data["events"]) == 2
-
-
-def test_acknowledge_already_delivered_event(client, mock_auth, mock_dynamodb):
-    """Test acknowledging an already-delivered event (idempotent)"""
-    mock_dynamodb.get_item.return_value = {
-        "Item": {
-            "event_id": "evt_123",
-            "status": "delivered",
-            "timestamp": 1700000000000,
-        }
-    }
-
-    response = client.post(
-        "/v1/events/evt_123/ack", headers={"Authorization": "Bearer test_key"}
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "acknowledged"
-
-
-def test_acknowledge_nonexistent_event(client, mock_auth, mock_dynamodb):
-    """Test acknowledging non-existent event"""
-    mock_dynamodb.get_item.return_value = {}
-
-    response = client.post(
-        "/v1/events/evt_nonexistent/ack", headers={"Authorization": "Bearer test_key"}
-    )
-
-    assert response.status_code == 404
-
-
-def test_delete_nonexistent_event(client, mock_auth, mock_dynamodb):
-    """Test deleting non-existent event"""
-    mock_dynamodb.get_item.return_value = {}
-
-    response = client.delete(
-        "/v1/events/evt_nonexistent", headers={"Authorization": "Bearer test_key"}
-    )
-
-    assert response.status_code == 404
+    assert response.status_code == 500
+    assert "Failed to enqueue event" in response.json()["detail"]

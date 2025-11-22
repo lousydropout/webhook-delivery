@@ -174,6 +174,37 @@ class WebhookDeliveryStack(Stack):
         self.events_queue.grant_send_messages(self.api_lambda)
 
         # ============================================================
+        # Authorizer Lambda
+        # Validates Bearer tokens and returns tenant context
+        # ============================================================
+        self.authorizer_lambda = lambda_.Function(
+            self,
+            "AuthorizerLambda",
+            function_name=f"{prefix}-Authorizer",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.handler",
+            code=lambda_.Code.from_asset(
+                "../src/authorizer",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install -r requirements.txt -t /asset-output && "
+                        + "cp -r . /asset-output",
+                    ],
+                ),
+            ),
+            timeout=Duration.seconds(10),
+            memory_size=256,
+            environment={
+                "TENANT_API_KEYS_TABLE": self.tenant_api_keys_table.table_name,
+            },
+        )
+
+        self.tenant_api_keys_table.grant_read_data(self.authorizer_lambda)
+
+        # ============================================================
         # Worker Lambda (Webhook Delivery)
         # SQS triggered, bundled dependencies
         # ============================================================
@@ -248,6 +279,17 @@ class WebhookDeliveryStack(Stack):
         self.events_queue.grant_send_messages(self.dlq_processor_lambda)
 
         # ============================================================
+        # API Gateway Token Authorizer
+        # ============================================================
+        self.token_authorizer = apigateway.TokenAuthorizer(
+            self,
+            "ApiTokenAuthorizer",
+            handler=self.authorizer_lambda,
+            identity_source="method.request.header.Authorization",
+            results_cache_ttl=Duration.minutes(5),
+        )
+
+        # ============================================================
         # API Gateway with Custom Domain
         # ============================================================
         self.api = apigateway.LambdaRestApi(
@@ -261,6 +303,10 @@ class WebhookDeliveryStack(Stack):
                 stage_name="prod",
                 throttling_rate_limit=500,
                 throttling_burst_limit=1000,
+            ),
+            default_method_options=apigateway.MethodOptions(
+                authorizer=self.token_authorizer,
+                authorization_type=apigateway.AuthorizationType.CUSTOM,
             ),
             default_cors_preflight_options=apigateway.CorsOptions(
                 allow_origins=["*"],
@@ -284,9 +330,10 @@ class WebhookDeliveryStack(Stack):
             endpoint_type=apigateway.EndpointType.EDGE,
         )
 
+        # Map v1 to current API
         custom_domain.add_base_path_mapping(
             self.api,
-            base_path="",
+            base_path="v1",
             stage=self.api.deployment_stage,
         )
 
