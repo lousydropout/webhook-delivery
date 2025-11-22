@@ -21,7 +21,10 @@ from constructs import Construct
 load_dotenv()
 
 
-prefix = "Vincent-TriggerApi"
+prefix = os.getenv("PREFIX")
+if not prefix:
+    raise ValueError("PREFIX must be set in .env file")
+
 
 
 class WebhookDeliveryStack(Stack):
@@ -41,7 +44,7 @@ class WebhookDeliveryStack(Stack):
 
         zone = route53.HostedZone.from_hosted_zone_attributes(
             self,
-            "VincentHostedZone",
+            "HostedZone",
             hosted_zone_id=hosted_zone_id,
             zone_name=hosted_zone_url,
         )
