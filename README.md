@@ -15,33 +15,38 @@ This system provides a complete webhook delivery infrastructure that:
 ## Architecture
 
 **Components:**
-- **API Lambda** (FastAPI): Event ingestion with Bearer token auth
+- **Lambda Authorizer**: API Gateway authorizer for Bearer token validation (5-min cache)
+- **API Lambda** (FastAPI): Event ingestion with tenant context from authorizer
 - **SQS Queue**: Reliable message queue with 5 retry attempts
 - **Worker Lambda**: Webhook delivery with HMAC signature generation
 - **DLQ Processor Lambda**: Manual requeue for failed deliveries
 - **DynamoDB**: Event and tenant data with TTL support
-- **Custom Domain**: hooks.vincentchan.cloud with ACM SSL
+- **Custom Domain**: hooks.vincentchan.cloud (REGIONAL endpoint with ACM SSL)
 
 **System Diagram:**
 
 ```mermaid
 graph LR
-    A[External System] -->|POST /events| B[API Lambda<br/>FastAPI]
-    B -->|Store Event| C[(DynamoDB<br/>Events)]
-    B -->|Enqueue| D[SQS Queue]
-    D -->|Trigger| E[Worker Lambda]
-    E -->|Read Event| C
-    E -->|Deliver with<br/>HMAC| F[Tenant Webhook<br/>Endpoint]
-    D -->|After 5 Retries| G[Dead Letter<br/>Queue]
-    G -.->|Manual Requeue| H[DLQ Processor<br/>Lambda]
-    H -.->|Requeue| D
+    A[External System] -->|POST /v1/events<br/>Bearer Token| B[API Gateway<br/>Authorizer]
+    B -->|Validate Token| C[(DynamoDB<br/>TenantApiKeys)]
+    B -->|Authorized| D[API Lambda<br/>FastAPI]
+    D -->|Store Event| E[(DynamoDB<br/>Events)]
+    D -->|Enqueue| F[SQS Queue]
+    F -->|Trigger| G[Worker Lambda]
+    G -->|Read Event| E
+    G -->|Deliver with<br/>HMAC| H[Tenant Webhook<br/>Endpoint]
+    F -->|After 5 Retries| I[Dead Letter<br/>Queue]
+    I -.->|Manual Requeue| J[DLQ Processor<br/>Lambda]
+    J -.->|Requeue| F
 
     style B fill:#f9f,stroke:#333
-    style E fill:#f9f,stroke:#333
-    style H fill:#f9f,stroke:#333
+    style D fill:#f9f,stroke:#333
+    style G fill:#f9f,stroke:#333
+    style J fill:#f9f,stroke:#333
     style C fill:#bbf,stroke:#333
-    style D fill:#bfb,stroke:#333
-    style G fill:#fbb,stroke:#333
+    style E fill:#bbf,stroke:#333
+    style F fill:#bfb,stroke:#333
+    style I fill:#fbb,stroke:#333
 ```
 
 **Event Lifecycle:**
@@ -63,15 +68,20 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
     participant Ext as External System
+    participant AGW as API Gateway
+    participant Auth as Authorizer Lambda
     participant API as API Lambda
     participant DB as DynamoDB
     participant SQS as SQS Queue
     participant Worker as Worker Lambda
     participant Tenant as Tenant Server
 
-    Ext->>API: POST /events + Bearer Token
-    API->>DB: Lookup API Key
-    DB-->>API: Tenant Config
+    Ext->>AGW: POST /v1/events + Bearer Token
+    AGW->>Auth: Validate Token
+    Auth->>DB: Lookup API Key
+    DB-->>Auth: Tenant Config
+    Auth-->>AGW: Allow + Tenant Context (cached 5min)
+    AGW->>API: Invoke with Tenant Context
     API->>DB: Create Event (PENDING)
     API->>SQS: Enqueue {tenantId, eventId}
     API-->>Ext: 201 {event_id, status}
@@ -96,9 +106,10 @@ sequenceDiagram
 
 - ✅ **Reliable Delivery**: SQS-backed processing with automatic retries
 - ✅ **Security**: Stripe-style HMAC-SHA256 webhook signatures
+- ✅ **API Gateway Authorizer**: Lambda authorizer with 5-minute caching for performance
 - ✅ **Retry Logic**: Exponential backoff (1min, 2min, 4min, 8min, 16min)
 - ✅ **Multi-tenant**: Isolated API keys and webhook endpoints per tenant
-- ✅ **Custom Domain**: Professional SSL-enabled domain
+- ✅ **Custom Domain**: Professional SSL-enabled REGIONAL endpoint
 - ✅ **Auto-cleanup**: 30-day TTL on delivered events
 - ✅ **DLQ Management**: Manual requeue of failed messages
 - ✅ **No Lambda Layers**: Dependencies bundled directly for simplicity
@@ -133,7 +144,7 @@ This will:
 
 ```bash
 # Get API key from deploy output, then:
-curl -X POST https://hooks.vincentchan.cloud/events \
+curl -X POST https://hooks.vincentchan.cloud/v1/events \
   -H "Authorization: Bearer <api-key-from-deploy>" \
   -H "Content-Type: application/json" \
   -d '{"event": "user.signup", "user_id": "123", "email": "test@example.com"}'
@@ -170,10 +181,13 @@ zapier/
 │   │   └── webhook_delivery_stack.py  # Infrastructure definition
 │   └── requirements.txt
 ├── src/
+│   ├── authorizer/                     # API Gateway Authorizer Lambda
+│   │   ├── handler.py                  # Bearer token validation
+│   │   └── requirements.txt            # boto3
 │   ├── api/                            # Event Ingestion Lambda
 │   │   ├── main.py                     # FastAPI app + Mangum handler
-│   │   ├── auth.py                     # Bearer token authentication
-│   │   ├── routes.py                   # POST /events endpoint
+│   │   ├── context.py                  # Extract tenant from authorizer context
+│   │   ├── routes.py                   # POST /v1/events endpoint
 │   │   ├── dynamo.py                   # DynamoDB operations
 │   │   ├── models.py                   # Pydantic request/response models
 │   │   └── requirements.txt            # FastAPI, Mangum, boto3, pydantic
@@ -252,7 +266,7 @@ aws dynamodb update-item \
   --update-expression "SET targetUrl = :url" \
   --expression-attribute-values '{":url": {"S": "https://YOUR_NGROK_URL/webhook"}}'
 
-curl -X POST https://hooks.vincentchan.cloud/events \
+curl -X POST https://hooks.vincentchan.cloud/v1/events \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"test": "event"}'
