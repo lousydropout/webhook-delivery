@@ -107,12 +107,22 @@ sequenceDiagram
 - ✅ **Reliable Delivery**: SQS-backed processing with automatic retries
 - ✅ **Security**: Stripe-style HMAC-SHA256 webhook signatures
 - ✅ **API Gateway Authorizer**: Lambda authorizer with 5-minute caching for performance
+- ✅ **Interactive API Docs**: Public Swagger UI and ReDoc documentation
 - ✅ **Retry Logic**: Exponential backoff (1min, 2min, 4min, 8min, 16min)
 - ✅ **Multi-tenant**: Isolated API keys and webhook endpoints per tenant
 - ✅ **Custom Domain**: Professional SSL-enabled REGIONAL endpoint
 - ✅ **Auto-cleanup**: 30-day TTL on delivered events
 - ✅ **DLQ Management**: Manual requeue of failed messages
 - ✅ **No Lambda Layers**: Dependencies bundled directly for simplicity
+
+## API Documentation
+
+Interactive API documentation is available at:
+- **Swagger UI**: https://hooks.vincentchan.cloud/v1/docs
+- **ReDoc**: https://hooks.vincentchan.cloud/v1/redoc
+- **OpenAPI Schema**: https://hooks.vincentchan.cloud/v1/openapi.json
+
+These endpoints are publicly accessible (no authentication required) for easy integration.
 
 ## Quick Start
 

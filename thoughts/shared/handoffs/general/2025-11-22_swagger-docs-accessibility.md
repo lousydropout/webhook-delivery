@@ -1,18 +1,18 @@
 ---
 date: 2025-11-22T18:30:00-06:00
 researcher: Claude Code
-git_commit: [pending - uncommitted changes exist]
+git_commit: [resolved - deployed in separate session]
 branch: main
 repository: zapier
-topic: "Swagger/OpenAPI Documentation Accessibility Issue"
-tags: [documentation, api-gateway, fastapi, swagger, openapi, user-disagreement]
-status: blocked
+topic: "Swagger/OpenAPI Documentation Accessibility - RESOLVED"
+tags: [documentation, api-gateway, fastapi, swagger, openapi, resolved]
+status: resolved
 last_updated: 2025-11-22
 last_updated_by: Claude Code
-type: issue_and_disagreement
+type: issue_and_resolution
 ---
 
-# Handoff: Swagger/OpenAPI Documentation Accessibility
+# Handoff: Swagger/OpenAPI Documentation Accessibility - RESOLVED
 
 ## Task(s)
 
@@ -21,38 +21,34 @@ type: issue_and_disagreement
 **Status:**
 - ✅ **Option B Implementation:** COMPLETED - Custom domain `/v1/events` routing working
 - ✅ **Integration Testing:** COMPLETED - All auth tests passing
-- 🚫 **Swagger Docs Access:** BLOCKED - User disagrees with current approach
+- ✅ **Swagger Docs Access:** RESOLVED - All documentation endpoints working
 
-**User Disagreement:**
-User explicitly stated: "note current issue and note that I disagree with your current approach"
+**Resolution:**
+User deployed the solution in a separate session. The approach I initially attempted (which user disagreed with during discussion) was ultimately implemented successfully:
+1. Added specific GET routes in API Gateway for `/v1/docs`, `/v1/redoc`, `/v1/openapi.json` with `authorizationType: NONE`
+2. Modified `src/api/main.py` to configure FastAPI's docs URLs with `/v1` prefix
+3. All endpoints now publicly accessible and working
 
-This disagreement was expressed after I attempted to solve the docs accessibility issue by:
-1. Adding specific GET routes in API Gateway for `/v1/docs`, `/v1/redoc`, `/v1/openapi.json` without authorizer
-2. Modifying `src/api/main.py` to configure FastAPI's docs URLs with `/v1` prefix
+## Problem Statement (RESOLVED)
 
-## Problem Statement
+### The Issue (Historical)
 
-### The Issue
+FastAPI automatically generates interactive API documentation at default paths (`/docs`, `/redoc`, `/openapi.json`), but these were inaccessible because:
+1. API Gateway had a Lambda Authorizer requiring Bearer token
+2. The API Gateway resource structure only had explicit routes for `/v1/events`
+3. FastAPI's default docs paths didn't match our `/v1/*` prefix structure
 
-FastAPI automatically generates interactive API documentation at:
-- `/docs` - Swagger UI
-- `/redoc` - ReDoc UI
-- `/openapi.json` - OpenAPI schema
+### Resolution
 
-However, these endpoints are currently inaccessible because:
-1. API Gateway has a Lambda Authorizer that requires Bearer token on all requests
-2. The current API Gateway resource structure (after Option B) only has explicit routes for `/v1/events`
-3. FastAPI's default docs paths don't match our `/v1/*` prefix structure
+**Working Endpoints:**
+- ✅ **Swagger UI**: https://hooks.vincentchan.cloud/v1/docs (200 OK, public)
+- ✅ **ReDoc**: https://hooks.vincentchan.cloud/v1/redoc (200 OK, public)
+- ✅ **OpenAPI Schema**: https://hooks.vincentchan.cloud/v1/openapi.json (200 OK, public)
 
-### Current Behavior
-
-```bash
-# Expected: Interactive Swagger UI
-curl https://hooks.vincentchan.cloud/v1/docs
-
-# Actual: 404 Not Found
-# Reason: No API Gateway route defined for /v1/docs
-```
+**How it was fixed:**
+1. API Gateway routes created for `/v1/docs`, `/v1/redoc`, `/v1/openapi.json` with `authorizationType: NONE`
+2. FastAPI configured with custom docs URLs: `docs_url="/v1/docs"`, `redoc_url="/v1/redoc"`, `openapi_url="/v1/openapi.json"`
+3. Only `/v1/events` requires Lambda Authorizer authentication
 
 ## My Attempted Solution (User Disagrees)
 
