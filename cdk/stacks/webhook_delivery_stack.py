@@ -292,21 +292,16 @@ class WebhookDeliveryStack(Stack):
         # ============================================================
         # API Gateway with Custom Domain
         # ============================================================
-        self.api = apigateway.LambdaRestApi(
+        # Create RestApi manually to support explicit /v1/{proxy+} resource
+        self.api = apigateway.RestApi(
             self,
             "TriggerApi",
-            handler=self.api_lambda,
-            proxy=True,
             rest_api_name="Webhook Delivery API",
             description="Multi-tenant webhook delivery with SQS-backed processing",
             deploy_options=apigateway.StageOptions(
                 stage_name="prod",
                 throttling_rate_limit=500,
                 throttling_burst_limit=1000,
-            ),
-            default_method_options=apigateway.MethodOptions(
-                authorizer=self.token_authorizer,
-                authorization_type=apigateway.AuthorizationType.CUSTOM,
             ),
             default_cors_preflight_options=apigateway.CorsOptions(
                 allow_origins=["*"],
@@ -321,19 +316,47 @@ class WebhookDeliveryStack(Stack):
             ),
         )
 
-        # Custom domain mapping
+        # Create /v1 resource
+        v1_resource = self.api.root.add_resource("v1")
+
+        # Create /v1/{proxy+} resource for all sub-paths
+        proxy_resource = v1_resource.add_resource("{proxy+}")
+
+        # Lambda integration with proxy
+        lambda_integration = apigateway.LambdaIntegration(
+            self.api_lambda,
+            proxy=True,
+        )
+
+        # Add ANY method to /v1/{proxy+} with authorizer
+        proxy_resource.add_method(
+            "ANY",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+        )
+
+        # Also add ANY method to /v1 directly (for /v1 without trailing path)
+        v1_resource.add_method(
+            "ANY",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+        )
+
+        # Custom domain mapping (REGIONAL endpoint, no base path)
         custom_domain = apigateway.DomainName(
             self,
             "TriggerApiCustomDomain",
             domain_name=domain_name,
             certificate=certificate,
-            endpoint_type=apigateway.EndpointType.EDGE,
+            endpoint_type=apigateway.EndpointType.REGIONAL,
         )
 
-        # Map v1 to current API
+        # Map to root path (empty base path - no stripping needed)
         custom_domain.add_base_path_mapping(
             self.api,
-            base_path="v1",
+            base_path="",  # Empty = root path, no base path stripping
             stage=self.api.deployment_stage,
         )
 

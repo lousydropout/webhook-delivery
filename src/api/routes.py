@@ -14,13 +14,15 @@ sqs = boto3.client("sqs")
 EVENTS_QUEUE_URL = os.environ["EVENTS_QUEUE_URL"]
 
 
-@router.post("/events", status_code=201, response_model=EventCreateResponse)
+@router.post("/v1/events", status_code=201, response_model=EventCreateResponse)
 async def ingest_event(request: Request, payload: Dict[str, Any]):
     """
     Ingest event: store in DynamoDB and enqueue to SQS for delivery.
 
     Authentication is handled by API Gateway Lambda authorizer.
     Tenant context is extracted from request.scope["aws.event"].
+
+    Note: /v1 prefix matches API Gateway resource structure.
     """
     # Extract Lambda event from Mangum
     event = request.scope.get("aws.event", {})

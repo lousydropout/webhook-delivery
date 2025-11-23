@@ -52,7 +52,7 @@ def client():
 def test_create_event(client, mock_sqs, mock_create_event, mock_get_tenant_from_context):
     """Test event creation with authorizer context"""
     response = client.post(
-        "/events",
+        "/v1/events",
         json={"event_type": "test.event", "data": "foo"},
     )
 
@@ -80,7 +80,7 @@ def test_create_event_missing_auth_context(client, mock_sqs, mock_create_event):
         mock_context.side_effect = ValueError("Missing authorizer context")
 
         response = client.post(
-            "/events",
+            "/v1/events",
             json={"event_type": "test.event", "data": "foo"},
         )
 
@@ -93,7 +93,7 @@ def test_create_event_sqs_failure(client, mock_sqs, mock_create_event, mock_get_
     mock_sqs.send_message.side_effect = Exception("SQS error")
 
     response = client.post(
-        "/events",
+        "/v1/events",
         json={"event_type": "test.event", "data": "foo"},
     )
 
