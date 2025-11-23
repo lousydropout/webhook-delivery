@@ -319,26 +319,26 @@ class WebhookDeliveryStack(Stack):
         # Create /v1 resource
         v1_resource = self.api.root.add_resource("v1")
 
-        # Create /v1/{proxy+} resource for all sub-paths
-        proxy_resource = v1_resource.add_resource("{proxy+}")
-
         # Lambda integration with proxy
         lambda_integration = apigateway.LambdaIntegration(
             self.api_lambda,
             proxy=True,
         )
 
-        # Add ANY method to /v1/{proxy+} with authorizer
-        proxy_resource.add_method(
-            "ANY",
-            lambda_integration,
-            authorization_type=apigateway.AuthorizationType.CUSTOM,
-            authorizer=self.token_authorizer,
-        )
+        # Add public docs endpoints (no auth required)
+        docs_resource = v1_resource.add_resource("docs")
+        docs_resource.add_method("GET", lambda_integration)
 
-        # Also add ANY method to /v1 directly (for /v1 without trailing path)
-        v1_resource.add_method(
-            "ANY",
+        redoc_resource = v1_resource.add_resource("redoc")
+        redoc_resource.add_method("GET", lambda_integration)
+
+        openapi_resource = v1_resource.add_resource("openapi.json")
+        openapi_resource.add_method("GET", lambda_integration)
+
+        # Create /v1/events resource with authorizer
+        events_resource = v1_resource.add_resource("events")
+        events_resource.add_method(
+            "POST",
             lambda_integration,
             authorization_type=apigateway.AuthorizationType.CUSTOM,
             authorizer=self.token_authorizer,
