@@ -26,6 +26,11 @@ app = FastAPI(
 dynamodb = boto3.resource("dynamodb")
 tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
 
+# In-memory cache for tenant enabled/disabled state
+# Key: tenant_id, Value: bool (True = enabled, False = disabled)
+# Default: all tenants are enabled unless explicitly disabled
+tenant_state_cache: Dict[str, bool] = {}
+
 
 def get_webhook_secret_for_tenant(tenant_id: str) -> Optional[str]:
     """
@@ -46,6 +51,24 @@ def get_webhook_secret_for_tenant(tenant_id: str) -> Optional[str]:
     except Exception as e:
         print(f"Error retrieving webhook secret for tenant {tenant_id}: {e}")
         return None
+
+
+def is_tenant_enabled(tenant_id: str) -> bool:
+    """
+    Check if tenant webhook reception is enabled.
+    Uses in-memory cache for Lambda container reuse.
+    Default: enabled (True) unless explicitly disabled.
+    """
+    return tenant_state_cache.get(tenant_id, True)
+
+
+def set_tenant_state(tenant_id: str, enabled: bool) -> None:
+    """
+    Set tenant webhook reception state.
+    Updates in-memory cache for this Lambda container.
+    """
+    tenant_state_cache[tenant_id] = enabled
+    print(f"Tenant {tenant_id} webhook reception {'enabled' if enabled else 'disabled'}")
 
 
 def verify_signature(payload: str, signature_header: str, webhook_secret: str) -> bool:
@@ -84,6 +107,11 @@ async def receive_webhook(
     Receive and validate webhook for a specific tenant.
     Path parameter identifies the tenant for secret lookup.
     """
+    # Check if tenant webhook reception is enabled
+    if not is_tenant_enabled(tenant_id):
+        print(f"Webhook reception disabled for tenant: {tenant_id}")
+        raise HTTPException(status_code=503, detail="Webhook reception temporarily disabled")
+
     # Validate signature header presence
     if not stripe_signature:
         print(f"Missing Stripe-Signature header for tenant: {tenant_id}")
@@ -113,6 +141,67 @@ async def receive_webhook(
         print(f"✓ Valid webhook received for tenant {tenant_id} (non-JSON payload)")
 
     return {"status": "received", "tenant_id": tenant_id}
+
+
+@app.post("/{tenant_id}/enable")
+async def enable_webhook_reception(tenant_id: str):
+    """
+    Enable webhook reception for a tenant.
+    Useful for testing and demonstrating retry functionality.
+    """
+    # Verify tenant exists
+    webhook_secret = get_webhook_secret_for_tenant(tenant_id)
+    if not webhook_secret:
+        print(f"Tenant not found: {tenant_id}")
+        raise HTTPException(status_code=404, detail="Tenant not found or inactive")
+
+    set_tenant_state(tenant_id, True)
+    return {
+        "tenant_id": tenant_id,
+        "webhook_reception": "enabled",
+        "message": "Webhook reception has been enabled"
+    }
+
+
+@app.post("/{tenant_id}/disable")
+async def disable_webhook_reception(tenant_id: str):
+    """
+    Disable webhook reception for a tenant.
+    Webhooks will return 503 until re-enabled.
+    Useful for testing retry functionality.
+    """
+    # Verify tenant exists
+    webhook_secret = get_webhook_secret_for_tenant(tenant_id)
+    if not webhook_secret:
+        print(f"Tenant not found: {tenant_id}")
+        raise HTTPException(status_code=404, detail="Tenant not found or inactive")
+
+    set_tenant_state(tenant_id, False)
+    return {
+        "tenant_id": tenant_id,
+        "webhook_reception": "disabled",
+        "message": "Webhook reception has been disabled. Webhooks will return 503 until re-enabled."
+    }
+
+
+@app.get("/{tenant_id}/status")
+async def get_webhook_status(tenant_id: str):
+    """
+    Get webhook reception status for a tenant.
+    Shows whether webhooks will be accepted or rejected with 503.
+    """
+    # Verify tenant exists
+    webhook_secret = get_webhook_secret_for_tenant(tenant_id)
+    if not webhook_secret:
+        print(f"Tenant not found: {tenant_id}")
+        raise HTTPException(status_code=404, detail="Tenant not found or inactive")
+
+    enabled = is_tenant_enabled(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "webhook_reception": "enabled" if enabled else "disabled",
+        "accepts_webhooks": enabled
+    }
 
 
 @app.get("/health")
