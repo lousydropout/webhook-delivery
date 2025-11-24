@@ -710,11 +710,11 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{receiver_base_url}}/{{tenant_id}}/status",
+              "raw": "{{receiver_base_url}}/status",
               "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "status"]
+              "path": ["status"]
             },
-            "description": "Get webhook reception status for tenant (enabled/disabled)"
+            "description": "Get global webhook reception status (applies to all tenants)"
           }
         },
         {
@@ -723,11 +723,11 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{receiver_base_url}}/{{tenant_id}}/disable",
+              "raw": "{{receiver_base_url}}/disable",
               "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "disable"]
+              "path": ["disable"]
             },
-            "description": "Disable webhook reception for tenant (webhooks will return 503)"
+            "description": "Disable webhook reception globally for all tenants (webhooks will return 503)"
           }
         },
         {
@@ -736,15 +736,161 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{receiver_base_url}}/{{tenant_id}}/enable",
+              "raw": "{{receiver_base_url}}/enable",
               "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "enable"]
+              "path": ["enable"]
             },
-            "description": "Enable webhook reception for tenant (resume accepting webhooks)"
+            "description": "Enable webhook reception globally for all tenants (resume accepting webhooks)"
           }
         }
       ],
       "description": "Manage webhook receiver status and view documentation"
+    },
+    {
+      "name": "5. DLQ Management",
+      "item": [
+        {
+          "name": "GET DLQ Messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{api_base_url}}/v1/admin/dlq/messages?limit=10",
+              "host": ["{{api_base_url}}"],
+              "path": ["v1", "admin", "dlq", "messages"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "description": "Maximum number of messages to return (1-10)"
+                }
+              ]
+            },
+            "description": "List messages currently in the Dead Letter Queue. Messages are NOT deleted by this endpoint."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has messages array', function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('messages');",
+                  "    pm.expect(jsonData.messages).to.be.an('array');",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    const jsonData = pm.response.json();",
+                  "    console.log('DLQ Messages:', JSON.stringify(jsonData, null, 2));",
+                  "    console.log('Total messages:', jsonData.messages.length);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Requeue DLQ Messages",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"batchSize\": 10,\n  \"maxMessages\": 100\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{api_base_url}}/v1/admin/dlq/requeue",
+              "host": ["{{api_base_url}}"],
+              "path": ["v1", "admin", "dlq", "requeue"]
+            },
+            "description": "Requeue messages from DLQ back to the main events queue. This invokes the DLQ Processor Lambda internally."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has requeued and failed counts', function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('requeued');",
+                  "    pm.expect(jsonData).to.have.property('failed');",
+                  "    pm.expect(jsonData.requeued).to.be.a('number');",
+                  "    pm.expect(jsonData.failed).to.be.a('number');",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    const jsonData = pm.response.json();",
+                  "    console.log('Requeued:', jsonData.requeued);",
+                  "    console.log('Failed:', jsonData.failed);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Purge DLQ",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{api_base_url}}/v1/admin/dlq/purge",
+              "host": ["{{api_base_url}}"],
+              "path": ["v1", "admin", "dlq", "purge"]
+            },
+            "description": "⚠️ WARNING: Permanently delete all messages from the Dead Letter Queue. This operation is irreversible."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response confirms purge', function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('status');",
+                  "    pm.expect(jsonData).to.have.property('queue');",
+                  "    pm.expect(jsonData.status).to.equal('purged');",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    const jsonData = pm.response.json();",
+                  "    console.log('DLQ Purged:', jsonData.queue);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Admin endpoints for managing the Dead Letter Queue (DLQ). All endpoints require Bearer token authentication."
     }
   ],
   "auth": {

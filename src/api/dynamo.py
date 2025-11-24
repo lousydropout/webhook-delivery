@@ -137,6 +137,34 @@ def get_event(tenant_id: str, event_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def mark_event_as_purged(tenant_id: str, event_id: str) -> bool:
+    """
+    Mark an event as PURGED status.
+    Used when DLQ messages are purged.
+
+    Args:
+        tenant_id: Tenant identifier
+        event_id: Event identifier
+
+    Returns:
+        True if event was updated, False if event not found
+    """
+    try:
+        events_table.update_item(
+            Key={
+                "tenantId": tenant_id,
+                "eventId": event_id,
+            },
+            UpdateExpression="SET #status = :purged",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":purged": "PURGED"},
+        )
+        return True
+    except Exception as e:
+        print(f"Error marking event {event_id} as purged: {e}")
+        return False
+
+
 def reset_event_for_retry(tenant_id: str, event_id: str) -> bool:
     """
     Reset a FAILED event to PENDING status for manual retry.
@@ -296,7 +324,9 @@ def get_tenant_by_id(tenant_id: str) -> Optional[Dict[str, Any]]:
         tenant_safe = {
             "tenant_id": tenant_id,
             "target_url": item.get("targetUrl", ""),
-            "created_at": item.get("lastUpdated", ""),  # Use lastUpdated as created_at proxy
+            "created_at": item.get(
+                "lastUpdated", ""
+            ),  # Use lastUpdated as created_at proxy
             "updated_at": item.get("lastUpdated", ""),
         }
 

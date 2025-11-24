@@ -9,7 +9,7 @@ import hashlib
 import json
 import boto3
 from fastapi import FastAPI, Request, HTTPException, Header
-from typing import Optional, Dict, Any
+from typing import Optional
 from mangum import Mangum
 
 # Initialize FastAPI app
@@ -24,14 +24,10 @@ app = FastAPI(
 
 # Module-level DynamoDB initialization (Lambda best practice)
 dynamodb = boto3.resource("dynamodb")
-tenant_webhook_config_table = dynamodb.Table(
-    os.environ["TENANT_WEBHOOK_CONFIG_TABLE"]
-)
+tenant_webhook_config_table = dynamodb.Table(os.environ["TENANT_WEBHOOK_CONFIG_TABLE"])
 
-# In-memory cache for tenant enabled/disabled state
-# Key: tenant_id, Value: bool (True = enabled, False = disabled)
-# Default: all tenants are enabled unless explicitly disabled
-tenant_state_cache: Dict[str, bool] = {}
+# Special tenantId used to store global webhook reception state
+GLOBAL_CONFIG_TENANT_ID = "__GLOBAL_CONFIG__"
 
 
 def get_webhook_secret_for_tenant(tenant_id: str) -> Optional[str]:
@@ -54,24 +50,50 @@ def get_webhook_secret_for_tenant(tenant_id: str) -> Optional[str]:
         return None
 
 
-def is_tenant_enabled(tenant_id: str) -> bool:
+def is_webhook_reception_enabled() -> bool:
     """
-    Check if tenant webhook reception is enabled.
-    Uses in-memory cache for Lambda container reuse.
-    Default: enabled (True) unless explicitly disabled.
+    Check if webhook reception is enabled globally.
+    Reads from DynamoDB for persistent state across container recycles.
+    Default: enabled (True) if not set in DynamoDB.
     """
-    return tenant_state_cache.get(tenant_id, True)
+    try:
+        response = tenant_webhook_config_table.get_item(
+            Key={"tenantId": GLOBAL_CONFIG_TENANT_ID}
+        )
+        item = response.get("Item")
+        if item:
+            # State is stored as boolean in webhookReceptionEnabled field
+            return item.get("webhookReceptionEnabled", True)
+        # Default to enabled if not set
+        return True
+    except Exception as e:
+        print(f"Error reading webhook reception state: {e}")
+        # Default to enabled on error
+        return True
 
 
-def set_tenant_state(tenant_id: str, enabled: bool) -> None:
+def set_webhook_reception_state(enabled: bool) -> None:
     """
-    Set tenant webhook reception state.
-    Updates in-memory cache for this Lambda container.
+    Set global webhook reception state (applies to all tenants).
+    Stores in DynamoDB for persistence across container recycles.
     """
-    tenant_state_cache[tenant_id] = enabled
-    print(
-        f"Tenant {tenant_id} webhook reception {'enabled' if enabled else 'disabled'}"
-    )
+    import time
+
+    try:
+        timestamp = str(int(time.time()))
+        tenant_webhook_config_table.put_item(
+            Item={
+                "tenantId": GLOBAL_CONFIG_TENANT_ID,
+                "webhookReceptionEnabled": enabled,
+                "lastUpdated": timestamp,
+            }
+        )
+        print(
+            f"Global webhook reception {'enabled' if enabled else 'disabled'} (persisted to DynamoDB)"
+        )
+    except Exception as e:
+        print(f"Error storing webhook reception state: {e}")
+        raise
 
 
 def verify_signature(payload: str, signature_header: str, webhook_secret: str) -> bool:
@@ -110,9 +132,9 @@ async def receive_webhook(
     Receive and validate webhook for a specific tenant.
     Path parameter identifies the tenant for secret lookup.
     """
-    # Check if tenant webhook reception is enabled
-    if not is_tenant_enabled(tenant_id):
-        print(f"Webhook reception disabled for tenant: {tenant_id}")
+    # Check if webhook reception is enabled globally
+    if not is_webhook_reception_enabled():
+        print(f"Webhook reception disabled globally")
         raise HTTPException(
             status_code=503, detail="Webhook reception temporarily disabled"
         )
@@ -148,62 +170,47 @@ async def receive_webhook(
     return {"status": "received", "tenant_id": tenant_id}
 
 
-@app.post("/{tenant_id}/enable", tags=["Receiver Management"])
-async def enable_webhook_reception(tenant_id: str):
+@app.post("/enable", tags=["Receiver Management"])
+async def enable_webhook_reception():
     """
-    Enable webhook reception for a tenant.
+    Enable webhook reception globally (applies to all tenants).
     Useful for testing and demonstrating retry functionality.
-    """
-    # Verify tenant exists
-    webhook_secret = get_webhook_secret_for_tenant(tenant_id)
-    if not webhook_secret:
-        print(f"Tenant not found: {tenant_id}")
-        raise HTTPException(status_code=404, detail="Tenant not found or inactive")
 
-    set_tenant_state(tenant_id, True)
+    State is persisted in DynamoDB and survives Lambda container recycles.
+    """
+    set_webhook_reception_state(True)
     return {
-        "tenant_id": tenant_id,
         "webhook_reception": "enabled",
-        "message": "Webhook reception has been enabled",
+        "message": "Webhook reception has been enabled for all tenants",
     }
 
 
-@app.post("/{tenant_id}/disable", tags=["Receiver Management"])
-async def disable_webhook_reception(tenant_id: str):
+@app.post("/disable", tags=["Receiver Management"])
+async def disable_webhook_reception():
     """
-    Disable webhook reception for a tenant.
+    Disable webhook reception globally (applies to all tenants).
     Webhooks will return 503 until re-enabled.
     Useful for testing retry functionality.
-    """
-    # Verify tenant exists
-    webhook_secret = get_webhook_secret_for_tenant(tenant_id)
-    if not webhook_secret:
-        print(f"Tenant not found: {tenant_id}")
-        raise HTTPException(status_code=404, detail="Tenant not found or inactive")
 
-    set_tenant_state(tenant_id, False)
+    State is persisted in DynamoDB and survives Lambda container recycles.
+    """
+    set_webhook_reception_state(False)
     return {
-        "tenant_id": tenant_id,
         "webhook_reception": "disabled",
-        "message": "Webhook reception has been disabled. Webhooks will return 503 until re-enabled.",
+        "message": "Webhook reception has been disabled for all tenants. Webhooks will return 503 until re-enabled.",
     }
 
 
-@app.get("/{tenant_id}/status", tags=["Receiver Management"])
-async def get_webhook_status(tenant_id: str):
+@app.get("/status", tags=["Receiver Management"])
+async def get_webhook_status():
     """
-    Get webhook reception status for a tenant.
-    Shows whether webhooks will be accepted or rejected with 503.
-    """
-    # Verify tenant exists
-    webhook_secret = get_webhook_secret_for_tenant(tenant_id)
-    if not webhook_secret:
-        print(f"Tenant not found: {tenant_id}")
-        raise HTTPException(status_code=404, detail="Tenant not found or inactive")
+    Get global webhook reception status.
+    Shows whether webhooks will be accepted or rejected with 503 for all tenants.
 
-    enabled = is_tenant_enabled(tenant_id)
+    State is read from DynamoDB and persists across Lambda container recycles.
+    """
+    enabled = is_webhook_reception_enabled()
     return {
-        "tenant_id": tenant_id,
         "webhook_reception": "enabled" if enabled else "disabled",
         "accepts_webhooks": enabled,
     }

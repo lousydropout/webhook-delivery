@@ -10,6 +10,7 @@ from dynamo import (
     list_events,
     get_event,
     reset_event_for_retry,
+    mark_event_as_purged,
     create_tenant,
     get_tenant_by_id,
     update_tenant_config_by_id,
@@ -28,12 +29,20 @@ from models import (
     TenantDetailResponse,
     encode_pagination_token,
     decode_pagination_token,
+    DlqMessagesResponse,
+    DlqMessage,
+    DlqRequeueRequest,
+    DlqRequeueResponse,
+    DlqPurgeResponse,
 )
 
 router = APIRouter()
 
 sqs = boto3.client("sqs")
+lambda_client = boto3.client("lambda")
 EVENTS_QUEUE_URL = os.environ["EVENTS_QUEUE_URL"]
+EVENTS_DLQ_URL = os.environ.get("EVENTS_DLQ_URL")
+DLQ_PROCESSOR_FUNCTION_NAME = os.environ.get("DLQ_PROCESSOR_FUNCTION_NAME")
 
 
 @router.post(
@@ -101,7 +110,7 @@ async def list_tenant_events(
     List all events for the authenticated tenant.
 
     Query Parameters:
-    - status: Filter by event status (PENDING, DELIVERED, FAILED)
+    - status: Filter by event status (PENDING, DELIVERED, FAILED, PURGED)
     - limit: Maximum number of events to return (default 50, max 100)
     - next_token: Pagination token from previous response
 
@@ -119,10 +128,10 @@ async def list_tenant_events(
     tenant_id = tenant["tenantId"]
 
     # Validate status parameter if provided
-    if status and status not in ["PENDING", "DELIVERED", "FAILED"]:
+    if status and status not in ["PENDING", "DELIVERED", "FAILED", "PURGED"]:
         raise HTTPException(
             status_code=400,
-            detail="Invalid status. Must be one of: PENDING, DELIVERED, FAILED",
+            detail="Invalid status. Must be one of: PENDING, DELIVERED, FAILED, PURGED",
         )
 
     # Validate and cap limit
@@ -265,6 +274,18 @@ async def retry_event(
         raise HTTPException(
             status_code=400,
             detail=f"Cannot retry event with status '{event_data['status']}'. Only FAILED events can be retried.",
+        )
+
+    # Prevent excessive manual retries
+    # Each manual retry creates a NEW SQS message (not a retry of existing message)
+    # This can create many duplicate messages if retried repeatedly
+    # After 5 manual retries, encourage using DLQ requeue endpoint instead
+    attempts = event_data.get("attempts", 0)
+    if attempts >= 5:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Event has {attempts} attempts. Manual retries create new SQS messages and can lead to duplicate processing. "
+            f"For events with 5+ attempts, check DLQ first (GET /v1/admin/dlq/messages) and use POST /v1/admin/dlq/requeue if needed.",
         )
 
     # Reset event to PENDING in DynamoDB (preserves attempt count)
@@ -497,3 +518,233 @@ async def update_tenant(
         updated_at=updated_config["updatedAt"],
         message="Tenant configuration updated successfully",
     )
+
+
+# ============================================================
+# DLQ Management Endpoints (Admin)
+# ============================================================
+
+
+@router.get(
+    "/v1/admin/dlq/messages",
+    response_model=DlqMessagesResponse,
+    tags=["DLQ Management"],
+)
+async def get_dlq_messages(request: Request, limit: int = 10):
+    """
+    List messages currently in the Dead Letter Queue.
+
+    Query Parameters:
+    - limit: Maximum number of messages to return (default 10, max 10)
+
+    Returns raw DLQ messages with metadata (messageId, receiptHandle, body, attributes).
+    Messages are NOT deleted from the DLQ by this endpoint.
+
+    Authentication via Bearer token required (API Gateway Lambda Authorizer).
+    """
+    # Extract tenant context from Lambda Authorizer
+    event = request.scope.get("aws.event", {})
+
+    try:
+        tenant = get_tenant_from_context(event)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
+
+    if not EVENTS_DLQ_URL:
+        raise HTTPException(
+            status_code=500, detail="DLQ URL not configured in environment"
+        )
+
+    # Validate limit
+    if limit < 1 or limit > 10:
+        raise HTTPException(
+            status_code=400, detail="Invalid limit. Must be between 1 and 10"
+        )
+
+    try:
+        # Receive messages from DLQ (without deleting them)
+        response = sqs.receive_message(
+            QueueUrl=EVENTS_DLQ_URL,
+            MaxNumberOfMessages=limit,
+            AttributeNames=["All"],
+            MessageAttributeNames=["All"],
+        )
+
+        messages = response.get("Messages", [])
+
+        # Convert to response model
+        dlq_messages = [
+            DlqMessage(
+                messageId=msg["MessageId"],
+                receiptHandle=msg["ReceiptHandle"],
+                body=json.loads(msg["Body"]),
+                attributes=msg.get("Attributes", {}),
+            )
+            for msg in messages
+        ]
+
+        return DlqMessagesResponse(messages=dlq_messages)
+
+    except Exception as e:
+        print(f"Error retrieving DLQ messages: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve DLQ messages")
+
+
+@router.post(
+    "/v1/admin/dlq/requeue",
+    response_model=DlqRequeueResponse,
+    tags=["DLQ Management"],
+)
+async def requeue_dlq_messages(request: Request, req: DlqRequeueRequest):
+    """
+    Requeue messages from DLQ back to the main events queue.
+
+    Request Body:
+    - batchSize: Number of messages to process per batch (default 10, max 10)
+    - maxMessages: Maximum total messages to requeue (default 100, max 1000)
+
+    This endpoint invokes the DLQ Processor Lambda function, which:
+    1. Reads messages from DLQ
+    2. Validates message format
+    3. Sends valid messages back to main queue
+    4. Deletes processed messages from DLQ
+
+    Returns the number of messages successfully requeued and failed.
+
+    Authentication via Bearer token required (API Gateway Lambda Authorizer).
+    """
+    # Extract tenant context from Lambda Authorizer
+    event = request.scope.get("aws.event", {})
+
+    try:
+        tenant = get_tenant_from_context(event)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
+
+    if not DLQ_PROCESSOR_FUNCTION_NAME:
+        raise HTTPException(
+            status_code=500,
+            detail="DLQ Processor function name not configured in environment",
+        )
+
+    try:
+        # Invoke DLQ Processor Lambda
+        response = lambda_client.invoke(
+            FunctionName=DLQ_PROCESSOR_FUNCTION_NAME,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(
+                {
+                    "batchSize": req.batchSize,
+                    "maxMessages": req.maxMessages,
+                }
+            ),
+        )
+
+        # Parse response
+        response_payload = json.loads(response["Payload"].read())
+        if response.get("FunctionError"):
+            raise Exception(f"Lambda error: {response_payload}")
+
+        # DLQ Processor returns statusCode and body
+        if isinstance(response_payload, dict) and "body" in response_payload:
+            result = json.loads(response_payload["body"])
+        else:
+            result = response_payload
+
+        return DlqRequeueResponse(
+            requeued=result.get("requeued", 0), failed=result.get("failed", 0)
+        )
+
+    except Exception as e:
+        print(f"Error invoking DLQ Processor: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to requeue DLQ messages: {str(e)}"
+        )
+
+
+@router.post(
+    "/v1/admin/dlq/purge",
+    response_model=DlqPurgeResponse,
+    tags=["DLQ Management"],
+)
+async def purge_dlq(request: Request):
+    """
+    Completely purge all messages from the Dead Letter Queue.
+
+    ⚠️ **Warning**: This operation is irreversible. All messages in the DLQ will be permanently deleted.
+
+    Returns confirmation with the DLQ URL that was purged.
+
+    Authentication via Bearer token required (API Gateway Lambda Authorizer).
+    """
+    # Extract tenant context from Lambda Authorizer
+    event = request.scope.get("aws.event", {})
+
+    try:
+        tenant = get_tenant_from_context(event)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
+
+    if not EVENTS_DLQ_URL:
+        raise HTTPException(
+            status_code=500, detail="DLQ URL not configured in environment"
+        )
+
+    try:
+        # First, read all DLQ messages to get event IDs before purging
+        events_marked = 0
+        events_failed = 0
+
+        # Receive messages in batches to extract event IDs
+        # Note: We don't delete messages here - purge_queue will delete all messages
+        max_iterations = 100  # Safety limit to prevent infinite loops
+        iteration = 0
+
+        while iteration < max_iterations:
+            iteration += 1
+            response = sqs.receive_message(
+                QueueUrl=EVENTS_DLQ_URL,
+                MaxNumberOfMessages=10,  # Max batch size
+                WaitTimeSeconds=0,  # Don't wait, return immediately
+            )
+
+            messages = response.get("Messages", [])
+            if not messages:
+                # No more messages
+                break
+
+            # Extract event IDs and mark events as PURGED
+            for message in messages:
+                try:
+                    body = json.loads(message["Body"])
+                    tenant_id = body.get("tenantId")
+                    event_id = body.get("eventId")
+
+                    if tenant_id and event_id:
+                        if mark_event_as_purged(tenant_id, event_id):
+                            events_marked += 1
+                        else:
+                            events_failed += 1
+                    else:
+                        print(f"Invalid message format in DLQ: {body}")
+                        events_failed += 1
+                except Exception as e:
+                    print(f"Error processing DLQ message: {e}")
+                    events_failed += 1
+
+            # If we got fewer than max messages, we've read all available
+            if len(messages) < 10:
+                break
+
+        # Now purge the DLQ (this deletes all messages)
+        sqs.purge_queue(QueueUrl=EVENTS_DLQ_URL)
+
+        print(
+            f"Purged DLQ: marked {events_marked} events as PURGED, {events_failed} failed"
+        )
+
+        return DlqPurgeResponse(status="purged", queue=EVENTS_DLQ_URL)
+
+    except Exception as e:
+        print(f"Error purging DLQ: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to purge DLQ: {str(e)}")

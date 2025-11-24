@@ -13,45 +13,44 @@ The webhook delivery system includes control endpoints that allow you to tempora
 
 ## Receiver Control Endpoints
 
-### GET `/{tenant_id}/status`
+These endpoints control webhook reception **globally** for all tenants.
 
-Check whether webhook reception is enabled or disabled for a tenant.
+### GET `/status`
+
+Check whether webhook reception is enabled or disabled globally.
 
 **Response:**
 
 ```json
 {
-  "tenant_id": "test-tenant",
   "webhook_reception": "enabled",
   "accepts_webhooks": true
 }
 ```
 
-### POST `/{tenant_id}/disable`
+### POST `/disable`
 
-Temporarily disable webhook reception. Incoming webhooks will return `503 Service Unavailable`.
+Temporarily disable webhook reception globally. All incoming webhooks will return `503 Service Unavailable`.
 
 **Response:**
 
 ```json
 {
-  "tenant_id": "test-tenant",
   "webhook_reception": "disabled",
-  "message": "Webhook reception has been disabled. Webhooks will return 503 until re-enabled."
+  "message": "Webhook reception has been disabled for all tenants. Webhooks will return 503 until re-enabled."
 }
 ```
 
-### POST `/{tenant_id}/enable`
+### POST `/enable`
 
-Re-enable webhook reception after being disabled.
+Re-enable webhook reception globally after being disabled.
 
 **Response:**
 
 ```json
 {
-  "tenant_id": "test-tenant",
   "webhook_reception": "enabled",
-  "message": "Webhook reception has been enabled"
+  "message": "Webhook reception has been enabled for all tenants"
 }
 ```
 
@@ -60,7 +59,7 @@ Re-enable webhook reception after being disabled.
 ### Step 1: Check Initial Status
 
 ```bash
-curl -X GET https://receiver.vincentchan.cloud/test-tenant/status
+curl -X GET https://receiver.vincentchan.cloud/status
 ```
 
 Expected: `{"webhook_reception": "enabled", "accepts_webhooks": true}`
@@ -68,10 +67,10 @@ Expected: `{"webhook_reception": "enabled", "accepts_webhooks": true}`
 ### Step 2: Disable Webhook Reception
 
 ```bash
-curl -X POST https://receiver.vincentchan.cloud/test-tenant/disable
+curl -X POST https://receiver.vincentchan.cloud/disable
 ```
 
-Expected: `{"webhook_reception": "disabled", "message": "..."}`
+Expected: `{"webhook_reception": "disabled", "message": "Webhook reception has been disabled for all tenants..."}`
 
 ### Step 3: Create Event (Will Fail)
 
@@ -117,10 +116,10 @@ Expected response showing failure:
 ### Step 6: Re-enable Webhook Reception
 
 ```bash
-curl -X POST https://receiver.vincentchan.cloud/test-tenant/enable
+curl -X POST https://receiver.vincentchan.cloud/enable
 ```
 
-Expected: `{"webhook_reception": "enabled"}`
+Expected: `{"webhook_reception": "enabled", "message": "Webhook reception has been enabled for all tenants"}`
 
 ### Step 7: Retry Failed Event
 
@@ -171,9 +170,9 @@ Here's an actual test run demonstrating the flow:
 
 **After Re-enabling:**
 
-- Receiver enabled via POST /test-tenant/enable
-- Event retried via PATCH /v1/events/evt_9662694bb566 with {"status": "PENDING"}
-- Event requeued to SQS (attempts reset to 0)
+- Receiver enabled via POST /enable (global for all tenants)
+- Event retried via POST /v1/events/evt_9662694bb566/retry
+- Event requeued to SQS (attempts preserved)
 - Worker attempted delivery again → received 200
 - Final event status: `DELIVERED`, attempts: `2`
 
@@ -181,29 +180,30 @@ Here's an actual test run demonstrating the flow:
 
 ### State Management
 
-- Uses in-memory cache in Lambda container (`tenant_state_cache: Dict[str, bool]`)
-- Default state: enabled (accepts webhooks)
+- Uses in-memory global state in Lambda container (`global_webhook_reception_enabled: bool`)
+- Default state: enabled (accepts webhooks for all tenants)
 - State persists for Lambda container lifetime
+- Applies globally to all tenants (not per-tenant)
 - No DynamoDB persistence (intentionally temporary for testing)
 
 ### Webhook Endpoint Protection
 
-Located in `src/webhook_receiver/main.py:110-113`:
+Located in `src/webhook_receiver/main.py`:
 
 ```python
-# Check if tenant webhook reception is enabled
-if not is_tenant_enabled(tenant_id):
-    print(f"Webhook reception disabled for tenant: {tenant_id}")
+# Check if webhook reception is enabled globally
+if not is_webhook_reception_enabled():
+    print(f"Webhook reception disabled globally")
     raise HTTPException(status_code=503, detail="Webhook reception temporarily disabled")
 ```
 
 ### Retry Logic
 
-Located in `src/api/routes.py:210-290`:
+Located in `src/api/routes.py`:
 
 1. Validates event exists and belongs to tenant
-2. Accepts status update to "PENDING" via PATCH request
-3. Resets event to `PENDING` in DynamoDB (sets attempts to 0)
+2. Accepts retry via POST `/v1/events/{event_id}/retry`
+3. Resets event to `PENDING` in DynamoDB (preserves attempt count)
 4. Requeues message to SQS
 5. Returns updated event details
 
@@ -244,10 +244,13 @@ If you need persistent enable/disable state:
 
 ## Related Endpoints
 
-- **POST /v1/events** - Create events ([src/api/routes.py:40-82](src/api/routes.py#L40-L82))
-- **GET /v1/events** - List events ([src/api/routes.py:84-157](src/api/routes.py#L84-L157))
-- **GET /v1/events/{event_id}** - Event details ([src/api/routes.py:159-208](src/api/routes.py#L159-L208))
-- **PATCH /v1/events/{event_id}** - Update event (set status to "PENDING" to retry) ([src/api/routes.py:210-290](src/api/routes.py#L210-L290))
+- **POST /v1/events** - Create events
+- **GET /v1/events** - List events
+- **GET /v1/events/{event_id}** - Event details
+- **POST /v1/events/{event_id}/retry** - Retry failed event
+- **POST /enable** - Enable webhook reception globally
+- **POST /disable** - Disable webhook reception globally
+- **GET /status** - Get global webhook reception status
 
 ## Troubleshooting
 
@@ -259,20 +262,20 @@ If you need persistent enable/disable state:
 
 ### Enable/Disable not working
 
-- State is per-Lambda container
+- State is global and per-Lambda container
 - If multiple containers exist, you may need to disable multiple times
 - State resets when container recycles (typically after 15-30 minutes of inactivity)
+- Applies to all tenants (not per-tenant)
 
 ### 404 on control endpoints
 
-- Ensure using correct tenant_id in URL path
-- Tenant must exist in TenantApiKeys table
+- Endpoints are at root level: `/enable`, `/disable`, `/status` (no tenant_id needed)
 - Verify API Gateway deployment completed successfully
 
 ## Code References
 
 - **Webhook Receiver**: [src/webhook_receiver/main.py](src/webhook_receiver/main.py)
-- **State Management**: Lines 29-71 (cache, helper functions)
-- **Control Endpoints**: Lines 118-176 (enable, disable, status)
-- **CDK Infrastructure**: [cdk/stacks/webhook_delivery_stack.py:426-464](cdk/stacks/webhook_delivery_stack.py#L426-L464)
-- **Postman Collection**: [postman_collection.json:490-528](postman_collection.json#L490-L528)
+- **State Management**: Global state variable and helper functions
+- **Control Endpoints**: `/enable`, `/disable`, `/status` (global, not tenant-specific)
+- **CDK Infrastructure**: [cdk/stacks/webhook_delivery_stack.py](cdk/stacks/webhook_delivery_stack.py)
+- **Postman Collection**: `4. Webhook Receiver` folder

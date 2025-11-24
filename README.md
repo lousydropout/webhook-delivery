@@ -704,29 +704,99 @@ aws logs tail /aws/lambda/Vincent-TriggerApi-WorkerHandler --follow
 aws logs tail /aws/lambda/Vincent-TriggerApi-ApiHandler --follow
 ```
 
-### DLQ Management
+### DLQ Management (Admin Endpoints)
 
-Requeue failed messages after fixing issues:
+The system provides REST API endpoints for managing the Dead Letter Queue. All endpoints require Bearer token authentication.
+
+#### GET /v1/admin/dlq/messages
+
+List messages currently in the DLQ without deleting them:
 
 ```bash
-aws lambda invoke \
-  --function-name Vincent-TriggerApi-DlqProcessor \
-  --payload '{"batchSize": 10, "maxMessages": 100}' \
-  response.json
-
-cat response.json
-# {"statusCode": 200, "body": "{\"requeued\": 5, \"failed\": 0}"}
+curl -X GET "https://hooks.vincentchan.cloud/v1/admin/dlq/messages?limit=10" \
+  --header "Authorization: Bearer <api_key>"
 ```
 
-### View DLQ Messages
+Response:
+
+```json
+{
+  "messages": [
+    {
+      "messageId": "abc123",
+      "receiptHandle": "xyz789",
+      "body": {
+        "tenantId": "tenant1",
+        "eventId": "evt_123"
+      },
+      "attributes": {
+        "ApproximateReceiveCount": "5",
+        "SentTimestamp": "1700000000000"
+      }
+    }
+  ]
+}
+```
+
+#### POST /v1/admin/dlq/requeue
+
+Requeue messages from DLQ back to the main events queue:
 
 ```bash
+curl -X POST "https://hooks.vincentchan.cloud/v1/admin/dlq/requeue" \
+  --header "Authorization: Bearer <api_key>" \
+  --header "Content-Type: application/json" \
+  --data '{
+    "batchSize": 10,
+    "maxMessages": 100
+  }'
+```
+
+Response:
+
+```json
+{
+  "requeued": 5,
+  "failed": 0
+}
+```
+
+This endpoint internally invokes the DLQ Processor Lambda to validate and requeue messages.
+
+#### POST /v1/admin/dlq/purge
+
+⚠️ **Warning**: Permanently delete all messages from the DLQ:
+
+```bash
+curl -X POST "https://hooks.vincentchan.cloud/v1/admin/dlq/purge" \
+  --header "Authorization: Bearer <api_key>"
+```
+
+Response:
+
+```json
+{
+  "status": "purged",
+  "queue": "https://sqs.us-east-1.amazonaws.com/123456789012/Vincent-TriggerApi-EventsDlq"
+}
+```
+
+**Note**: For programmatic access, you can also use AWS CLI directly:
+
+```bash
+# View DLQ messages (AWS CLI)
 aws sqs receive-message \
   --queue-url $(aws cloudformation describe-stacks \
     --stack-name WebhookDeliveryStack \
     --query 'Stacks[0].Outputs[?OutputKey==`EventsDlqUrl`].OutputValue' \
     --output text) \
   --max-number-of-messages 10
+
+# Invoke DLQ Processor Lambda directly
+aws lambda invoke \
+  --function-name Vincent-TriggerApi-DlqProcessor \
+  --payload '{"batchSize": 10, "maxMessages": 100}' \
+  response.json
 ```
 
 ## Troubleshooting

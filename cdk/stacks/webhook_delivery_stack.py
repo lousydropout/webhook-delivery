@@ -192,6 +192,40 @@ class WebhookDeliveryStack(Stack):
         )
 
         # ============================================================
+        # DLQ Processor Lambda (Manual Trigger)
+        # Reads DLQ and requeues to main queue
+        # Defined before API Lambda so API Lambda can reference it
+        # ============================================================
+        self.dlq_processor_lambda = lambda_.Function(
+            self,
+            "DlqProcessorLambda",
+            function_name=f"{prefix}-DlqProcessor",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.main",
+            code=lambda_.Code.from_asset(
+                "../src/dlq_processor",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install -r requirements.txt -t /asset-output && "
+                        + "cp -r . /asset-output",
+                    ],
+                ),
+            ),
+            timeout=Duration.seconds(300),
+            memory_size=512,
+            environment={
+                "EVENTS_DLQ_URL": self.events_dlq.queue_url,
+                "EVENTS_QUEUE_URL": self.events_queue.queue_url,
+            },
+        )
+
+        self.events_dlq.grant_consume_messages(self.dlq_processor_lambda)
+        self.events_queue.grant_send_messages(self.dlq_processor_lambda)
+
+        # ============================================================
         # API Lambda (Event Ingestion)
         # Bundled dependencies, no layer
         # ============================================================
@@ -220,6 +254,8 @@ class WebhookDeliveryStack(Stack):
                 "TENANT_WEBHOOK_CONFIG_TABLE": self.tenant_webhook_config_table.table_name,
                 "EVENTS_TABLE": self.events_table.table_name,
                 "EVENTS_QUEUE_URL": self.events_queue.queue_url,
+                "EVENTS_DLQ_URL": self.events_dlq.queue_url,
+                "DLQ_PROCESSOR_FUNCTION_NAME": self.dlq_processor_lambda.function_name,
             },
         )
 
@@ -228,11 +264,16 @@ class WebhookDeliveryStack(Stack):
         # - Read/write TenantWebhookConfig: Webhook config updates
         # - Read/write Events: Event ingestion and retrieval
         # - Send to SQS: Enqueue events for delivery
+        # - DLQ Management: Read DLQ messages, purge DLQ, invoke DLQ Processor
         # Note: API Lambda has broader access for demo/tenant management purposes.
         self.tenant_identity_table.grant_read_write_data(self.api_lambda)
         self.tenant_webhook_config_table.grant_read_write_data(self.api_lambda)
         self.events_table.grant_read_write_data(self.api_lambda)
         self.events_queue.grant_send_messages(self.api_lambda)
+        # DLQ management permissions
+        self.events_dlq.grant_consume_messages(self.api_lambda)
+        self.events_dlq.grant_purge(self.api_lambda)
+        self.dlq_processor_lambda.grant_invoke(self.api_lambda)
 
         # ============================================================
         # Authorizer Lambda
@@ -297,15 +338,18 @@ class WebhookDeliveryStack(Stack):
             environment={
                 "TENANT_WEBHOOK_CONFIG_TABLE": self.tenant_webhook_config_table.table_name,
                 "EVENTS_TABLE": self.events_table.table_name,
+                "EVENTS_DLQ_URL": self.events_dlq.queue_url,
             },
         )
 
         # Worker Lambda IAM Permissions (Least Privilege):
         # - Read/write Events: Update event delivery status
         # - Read-only TenantWebhookConfig: Get webhook secrets and target URLs
+        # - Send to DLQ: Send messages to DLQ when event exceeds max attempts
         # - NO access to TenantIdentity: Does not need authentication data
         self.events_table.grant_read_write_data(self.worker_lambda)
         self.tenant_webhook_config_table.grant_read_data(self.worker_lambda)
+        self.events_dlq.grant_send_messages(self.worker_lambda)
 
         self.worker_lambda.add_event_source(
             lambda_events.SqsEventSource(
@@ -314,39 +358,6 @@ class WebhookDeliveryStack(Stack):
                 max_batching_window=Duration.seconds(0),
             )
         )
-
-        # ============================================================
-        # DLQ Processor Lambda (Manual Trigger)
-        # Reads DLQ and requeues to main queue
-        # ============================================================
-        self.dlq_processor_lambda = lambda_.Function(
-            self,
-            "DlqProcessorLambda",
-            function_name=f"{prefix}-DlqProcessor",
-            runtime=lambda_.Runtime.PYTHON_3_12,
-            handler="handler.main",
-            code=lambda_.Code.from_asset(
-                "../src/dlq_processor",
-                bundling=BundlingOptions(
-                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
-                    command=[
-                        "bash",
-                        "-c",
-                        "pip install -r requirements.txt -t /asset-output && "
-                        + "cp -r . /asset-output",
-                    ],
-                ),
-            ),
-            timeout=Duration.seconds(300),
-            memory_size=512,
-            environment={
-                "EVENTS_DLQ_URL": self.events_dlq.queue_url,
-                "EVENTS_QUEUE_URL": self.events_queue.queue_url,
-            },
-        )
-
-        self.events_dlq.grant_consume_messages(self.dlq_processor_lambda)
-        self.events_queue.grant_send_messages(self.dlq_processor_lambda)
 
         # ============================================================
         # Webhook Receiver Lambda (Multi-tenant Webhook Validation)
@@ -377,10 +388,12 @@ class WebhookDeliveryStack(Stack):
         )
 
         # Webhook Receiver Lambda IAM Permissions (Least Privilege):
-        # - Read-only TenantWebhookConfig: Get webhook secrets for HMAC validation
+        # - Read/write TenantWebhookConfig: Get webhook secrets + store global reception state
         # - NO access to TenantIdentity: Does not need authentication data
         # - NO access to Events: Validation only, does not modify events
-        self.tenant_webhook_config_table.grant_read_data(self.webhook_receiver_lambda)
+        self.tenant_webhook_config_table.grant_read_write_data(
+            self.webhook_receiver_lambda
+        )
 
         # ============================================================
         # API Gateway Token Authorizer
@@ -518,6 +531,40 @@ class WebhookDeliveryStack(Stack):
             authorizer=self.token_authorizer,
         )
 
+        # Admin DLQ Management endpoints (all with authorizer)
+        admin_resource = v1_resource.add_resource("admin")
+        dlq_resource = admin_resource.add_resource("dlq")
+
+        # GET /v1/admin/dlq/messages - List DLQ messages
+        messages_resource = dlq_resource.add_resource("messages")
+        messages_resource.add_method(
+            "GET",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+            request_parameters={
+                "method.request.querystring.limit": False,
+            },
+        )
+
+        # POST /v1/admin/dlq/requeue - Requeue DLQ messages
+        requeue_resource = dlq_resource.add_resource("requeue")
+        requeue_resource.add_method(
+            "POST",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+        )
+
+        # POST /v1/admin/dlq/purge - Purge DLQ
+        purge_resource = dlq_resource.add_resource("purge")
+        purge_resource.add_method(
+            "POST",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+        )
+
         # ============================================================
         # Receiver API Gateway (Separate from Main API)
         # ============================================================
@@ -558,44 +605,35 @@ class WebhookDeliveryStack(Stack):
             },
         )
 
-        # Control endpoints for testing retry functionality
-        # POST /{tenantId}/enable - Enable webhook reception
-        enable_resource = tenant_resource.add_resource("enable")
+        # Global control endpoints for testing retry functionality
+        # POST /enable - Enable webhook reception globally (all tenants)
+        enable_resource = self.receiver_api.root.add_resource("enable")
         enable_resource.add_method(
             "POST",
             apigateway.LambdaIntegration(
                 self.webhook_receiver_lambda,
                 proxy=True,
             ),
-            request_parameters={
-                "method.request.path.tenantId": True,
-            },
         )
 
-        # POST /{tenantId}/disable - Disable webhook reception
-        disable_resource = tenant_resource.add_resource("disable")
+        # POST /disable - Disable webhook reception globally (all tenants)
+        disable_resource = self.receiver_api.root.add_resource("disable")
         disable_resource.add_method(
             "POST",
             apigateway.LambdaIntegration(
                 self.webhook_receiver_lambda,
                 proxy=True,
             ),
-            request_parameters={
-                "method.request.path.tenantId": True,
-            },
         )
 
-        # GET /{tenantId}/status - Get webhook reception status
-        status_resource = tenant_resource.add_resource("status")
+        # GET /status - Get global webhook reception status
+        status_resource = self.receiver_api.root.add_resource("status")
         status_resource.add_method(
             "GET",
             apigateway.LambdaIntegration(
                 self.webhook_receiver_lambda,
                 proxy=True,
             ),
-            request_parameters={
-                "method.request.path.tenantId": True,
-            },
         )
 
         # Health check endpoint: /health

@@ -21,7 +21,7 @@ class EventDetail(BaseModel):
     """Single event with full details"""
 
     event_id: str
-    status: str  # PENDING, DELIVERED, FAILED
+    status: str  # PENDING, DELIVERED, FAILED, PURGED
     created_at: str  # Unix timestamp as string
     payload: Dict[str, Any]
     target_url: str
@@ -142,3 +142,44 @@ def decode_pagination_token(token: str) -> Dict[str, Any]:
         return json.loads(base64.b64decode(token.encode()).decode())
     except Exception:
         return None
+
+
+# ============================================================
+# DLQ Management Models
+# ============================================================
+
+
+class DlqMessage(BaseModel):
+    """Single DLQ message with metadata"""
+
+    messageId: str
+    receiptHandle: str
+    body: Dict[str, Any]
+    attributes: Dict[str, Any]
+
+
+class DlqMessagesResponse(BaseModel):
+    """Response for GET /v1/admin/dlq/messages"""
+
+    messages: List[DlqMessage]
+
+
+class DlqRequeueRequest(BaseModel):
+    """Request body for POST /v1/admin/dlq/requeue"""
+
+    batchSize: int = Field(default=10, ge=1, le=10)
+    maxMessages: int = Field(default=100, ge=1, le=1000)
+
+
+class DlqRequeueResponse(BaseModel):
+    """Response for POST /v1/admin/dlq/requeue"""
+
+    requeued: int
+    failed: int
+
+
+class DlqPurgeResponse(BaseModel):
+    """Response for POST /v1/admin/dlq/purge"""
+
+    status: str
+    queue: str

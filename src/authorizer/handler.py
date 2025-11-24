@@ -17,10 +17,11 @@ def get_tenant_from_api_key(api_key: str) -> Optional[Dict]:
     """
     try:
         # Use ProjectionExpression to limit fields retrieved (least privilege)
+        # Note: Both "status" and "plan" are DynamoDB reserved keywords, so we alias them
         response = tenant_identity_table.get_item(
             Key={"apiKey": api_key},
-            ProjectionExpression="tenantId, #status, plan, createdAt",
-            ExpressionAttributeNames={"#status": "status"},
+            ProjectionExpression="tenantId, #status, #plan, createdAt",
+            ExpressionAttributeNames={"#status": "status", "#plan": "plan"},
         )
         item = response.get("Item")
 
