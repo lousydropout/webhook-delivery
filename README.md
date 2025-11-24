@@ -201,17 +201,5 @@ cdk deploy
 │   └── dlq_processor/                  # DLQ Requeue Lambda
 │       ├── handler.py                  # Manual DLQ requeue
 │       └── requirements.txt
-├── scripts/
-│   ├── deploy.sh                       # Automated deployment
-│   └── seed_webhooks.py                # Test tenant seeding
-├── tests/
-│   ├── webhook_receiver.py             # Local FastAPI test receiver
-│   ├── webhook_receiver_local.py       # Local test with mock DynamoDB
-│   ├── test_webhook_receiver_manual.py # Unit tests for signature validation
-│   ├── test_webhook_receiver_integration.py # End-to-end integration tests
-│   ├── test_with_curl_simple.sh        # Curl-based testing script
-│   └── requirements.txt
-├── docs/
-│   └── WEBHOOK_INTEGRATION.md          # Integration guide
 └── README.md
 ```
