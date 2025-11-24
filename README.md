@@ -5,6 +5,7 @@ Production-ready serverless webhook delivery platform built on AWS. Transform ev
 ## Overview
 
 This system provides a complete webhook delivery infrastructure that:
+
 - Ingests events via REST API
 - Queues events for reliable async processing
 - Delivers webhooks to tenant-configured endpoints
@@ -15,6 +16,7 @@ This system provides a complete webhook delivery infrastructure that:
 ## Architecture
 
 **Components:**
+
 - **Lambda Authorizer**: API Gateway authorizer for Bearer token validation (5-min cache)
 - **API Lambda** (FastAPI): Event ingestion with tenant context from authorizer
 - **SQS Queue**: Reliable message queue with 5 retry attempts
@@ -22,7 +24,7 @@ This system provides a complete webhook delivery infrastructure that:
 - **Webhook Receiver Lambda** (FastAPI): Multi-tenant webhook validation with HMAC verification
 - **DLQ Processor Lambda**: Manual requeue for failed deliveries
 - **DynamoDB**: Event and tenant data with TTL support
-- **Custom Domains**: 
+- **Custom Domains**:
   - hooks.vincentchan.cloud (Main API - REGIONAL endpoint with ACM SSL)
   - receiver.vincentchan.cloud (Webhook Receiver - REGIONAL endpoint with ACM SSL)
 
@@ -129,6 +131,7 @@ sequenceDiagram
 ## API Documentation
 
 Interactive API documentation is available at:
+
 - **Swagger UI**: https://hooks.vincentchan.cloud/v1/docs
 - **ReDoc**: https://hooks.vincentchan.cloud/v1/redoc
 - **OpenAPI Schema**: https://hooks.vincentchan.cloud/v1/openapi.json
@@ -156,6 +159,7 @@ These endpoints are publicly accessible (no authentication required) for easy in
 ```
 
 This will:
+
 1. Install CDK dependencies
 2. Bootstrap CDK (if needed)
 3. Deploy all AWS resources (DynamoDB, Lambda, SQS, API Gateway, Custom Domain)
@@ -185,12 +189,14 @@ The system includes a production-ready webhook receiver Lambda for end-to-end te
 ### Endpoints
 
 **Health Check:**
+
 ```bash
 GET https://receiver.vincentchan.cloud/health
 # Response: {"status": "healthy", "service": "webhook-receiver"}
 ```
 
 **Webhook Reception:**
+
 ```bash
 POST https://receiver.vincentchan.cloud/{tenantId}/webhook
 # Headers: Stripe-Signature: t={timestamp},v1={signature}
@@ -198,6 +204,7 @@ POST https://receiver.vincentchan.cloud/{tenantId}/webhook
 ```
 
 **API Documentation:**
+
 ```bash
 GET https://receiver.vincentchan.cloud/docs  # Swagger UI
 ```
@@ -228,6 +235,7 @@ curl -X POST https://hooks.vincentchan.cloud/v1/events \
 ```
 
 **What happens:**
+
 1. API Gateway validates Bearer token via Lambda Authorizer
 2. Authorizer looks up API key in DynamoDB, returns tenant context
 3. API Lambda creates event in DynamoDB with status `PENDING`
@@ -241,6 +249,7 @@ curl -X POST https://hooks.vincentchan.cloud/v1/events \
 ```
 
 **What happens:**
+
 1. Worker Lambda receives SQS message
 2. Worker reads event from DynamoDB (gets payload, targetUrl, webhookSecret)
 3. Worker generates Stripe-style HMAC signature:
@@ -258,6 +267,7 @@ If tenant's `targetUrl` is set to the receiver Lambda:
 ```
 
 **What happens:**
+
 1. Receiver extracts `tenant_id` from URL path
 2. Receiver looks up webhook secret from DynamoDB for that tenant
 3. Receiver validates HMAC signature:
@@ -273,6 +283,7 @@ If tenant's `targetUrl` is set to the receiver Lambda:
 #### Step 4: Worker Updates Status
 
 **What happens:**
+
 1. Worker receives 200 response from receiver
 2. Worker updates DynamoDB event status: `PENDING` → `DELIVERED`
 3. Worker deletes message from SQS (successful processing)
@@ -431,7 +442,7 @@ aws sqs receive-message \
 ## Project Structure
 
 ```
-zapier/
+/
 ├── cdk/
 │   ├── app.py                          # CDK application entry
 │   ├── stacks/
@@ -480,6 +491,7 @@ zapier/
 ### Tenant Setup
 
 Each tenant needs:
+
 - **API Key**: For authentication when posting events
 - **Webhook Secret**: For HMAC signature generation
 - **Target URL**: Where webhooks will be delivered
@@ -494,6 +506,7 @@ python scripts/seed_webhooks.py
 ### Event Schema
 
 Events are stored with:
+
 ```python
 {
     "tenantId": "acme",
@@ -539,6 +552,7 @@ curl -X POST https://hooks.vincentchan.cloud/v1/events \
 ### Verify Signature
 
 The test receiver validates HMAC signatures. Check the logs for:
+
 ```
 ✓ Valid webhook received: {"test": "event"}
 ```
@@ -565,6 +579,7 @@ aws dynamodb query \
 ### CloudWatch Logs
 
 Monitor delivery in real-time:
+
 ```bash
 # Worker Lambda logs
 aws logs tail /aws/lambda/Vincent-TriggerApi-WorkerHandler --follow
@@ -648,6 +663,7 @@ sam local invoke ApiLambda -e test_event.json
 ### Code Style
 
 All Python code formatted with Black:
+
 ```bash
 black .
 ```
