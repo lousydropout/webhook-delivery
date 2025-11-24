@@ -8,7 +8,7 @@ import time
 import sys
 
 dynamodb = boto3.resource("dynamodb")
-table = dynamodb.Table("Vincent-TriggerApi-TenantApiKeys")
+table = dynamodb.Table("Vincent-Trigger-TenantApiKeys")
 
 
 def generate_api_key(tenant_name: str) -> str:
@@ -26,19 +26,19 @@ def seed_tenants():
     """Seed 3 test tenants with webhook configs"""
     tenants = [
         {
+            "name": "test-tenant",
+            "display": "Test Tenant",
+            "targetUrl": "https://receiver.vincentchan.cloud/test-tenant/webhook",
+        },
+        {
             "name": "acme",
             "display": "Acme Corp",
-            "targetUrl": "https://webhook.site/unique-acme-id",  # Replace with real endpoint
+            "targetUrl": "https://receiver.vincentchan.cloud/acme/webhook",
         },
         {
             "name": "globex",
             "display": "Globex Inc",
-            "targetUrl": "https://webhook.site/unique-globex-id",
-        },
-        {
-            "name": "initech",
-            "display": "Initech LLC",
-            "targetUrl": "https://webhook.site/unique-initech-id",
+            "targetUrl": "https://receiver.vincentchan.cloud/globex/webhook",
         },
     ]
 
@@ -86,10 +86,10 @@ def seed_tenants():
     print()
     print("Test with:")
     for item in created:
-        print(f"curl -X POST https://hooks.vincentchan.cloud/events \\")
+        print(f"curl -X POST https://hooks.vincentchan.cloud/v1/events \\")
         print(f"  -H 'Authorization: Bearer {item['apiKey']}' \\")
         print(f"  -H 'Content-Type: application/json' \\")
-        print(f'  -d \'{{"test": "data"}}\'')
+        print(f'  -d \'{{"event": "test.event", "data": "test"}}\'')
         print()
 
 

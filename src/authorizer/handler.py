@@ -87,6 +87,12 @@ def handler(event: Dict, context: Any) -> Dict:
         return generate_policy("anonymous", "Deny", method_arn)
 
     # Generate Allow policy with tenant context
+    # Use wildcard to allow all methods for this API
+    # Convert arn:aws:execute-api:region:account:api-id/stage/method/path
+    # to arn:aws:execute-api:region:account:api-id/*
+    arn_parts = method_arn.split("/")
+    resource_arn = f"{arn_parts[0]}/*"
+
     tenant_id = tenant["tenantId"]
     context_data = {
         "tenantId": tenant["tenantId"],
@@ -96,4 +102,4 @@ def handler(event: Dict, context: Any) -> Dict:
     }
 
     print(f"Authorized tenant: {tenant_id}")
-    return generate_policy(tenant_id, "Allow", method_arn, context_data)
+    return generate_policy(tenant_id, "Allow", resource_arn, context_data)

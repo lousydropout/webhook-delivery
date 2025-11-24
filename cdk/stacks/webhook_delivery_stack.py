@@ -177,7 +177,7 @@ class WebhookDeliveryStack(Stack):
             },
         )
 
-        self.tenant_api_keys_table.grant_read_data(self.api_lambda)
+        self.tenant_api_keys_table.grant_read_write_data(self.api_lambda)
         self.events_table.grant_read_write_data(self.api_lambda)
         self.events_queue.grant_send_messages(self.api_lambda)
 
@@ -355,7 +355,7 @@ class WebhookDeliveryStack(Stack):
             ),
         )
 
-        # Create /v1 resource
+        # v1 resource group
         v1_resource = self.api.root.add_resource("v1")
 
         # Lambda integration with proxy
@@ -364,7 +364,7 @@ class WebhookDeliveryStack(Stack):
             proxy=True,
         )
 
-        # Add public docs endpoints (no auth required)
+        # Documentation resources (no auth required)
         docs_resource = v1_resource.add_resource("docs")
         docs_resource.add_method("GET", lambda_integration)
 
@@ -374,10 +374,58 @@ class WebhookDeliveryStack(Stack):
         openapi_resource = v1_resource.add_resource("openapi.json")
         openapi_resource.add_method("GET", lambda_integration)
 
-        # Create /v1/events resource with authorizer
+        # Events endpoints (all with authorizer)
         events_resource = v1_resource.add_resource("events")
+
+        # POST /v1/events - Create event
         events_resource.add_method(
             "POST",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+        )
+
+        # GET /v1/events - List events
+        events_resource.add_method(
+            "GET",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+            request_parameters={
+                "method.request.querystring.status": False,
+                "method.request.querystring.limit": False,
+                "method.request.querystring.next_token": False,
+            },
+        )
+
+        # GET /v1/events/{eventId} - Get event details
+        event_id_resource = events_resource.add_resource("{eventId}")
+        event_id_resource.add_method(
+            "GET",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+            request_parameters={
+                "method.request.path.eventId": True,
+            },
+        )
+
+        # POST /v1/events/{eventId}/retry - Retry failed event
+        retry_resource = event_id_resource.add_resource("retry")
+        retry_resource.add_method(
+            "POST",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+        )
+
+        # Tenants endpoints
+        tenants_resource = v1_resource.add_resource("tenants")
+        current_tenant_resource = tenants_resource.add_resource("current")
+
+        # PATCH /v1/tenants/current - Update tenant config
+        current_tenant_resource.add_method(
+            "PATCH",
             lambda_integration,
             authorization_type=apigateway.AuthorizationType.CUSTOM,
             authorizer=self.token_authorizer,
@@ -423,6 +471,46 @@ class WebhookDeliveryStack(Stack):
             },
         )
 
+        # Control endpoints for testing retry functionality
+        # POST /{tenantId}/enable - Enable webhook reception
+        enable_resource = tenant_resource.add_resource("enable")
+        enable_resource.add_method(
+            "POST",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+            request_parameters={
+                "method.request.path.tenantId": True,
+            },
+        )
+
+        # POST /{tenantId}/disable - Disable webhook reception
+        disable_resource = tenant_resource.add_resource("disable")
+        disable_resource.add_method(
+            "POST",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+            request_parameters={
+                "method.request.path.tenantId": True,
+            },
+        )
+
+        # GET /{tenantId}/status - Get webhook reception status
+        status_resource = tenant_resource.add_resource("status")
+        status_resource.add_method(
+            "GET",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+            request_parameters={
+                "method.request.path.tenantId": True,
+            },
+        )
+
         # Health check endpoint: /health
         health_resource = self.receiver_api.root.add_resource("health")
         health_resource.add_method(
@@ -436,6 +524,26 @@ class WebhookDeliveryStack(Stack):
         # Documentation endpoints: /docs
         docs_resource = self.receiver_api.root.add_resource("docs")
         docs_resource.add_method(
+            "GET",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+        )
+
+        # OpenAPI schema endpoint: /openapi.json
+        openapi_resource = self.receiver_api.root.add_resource("openapi.json")
+        openapi_resource.add_method(
+            "GET",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+        )
+
+        # ReDoc endpoint: /redoc
+        redoc_resource = self.receiver_api.root.add_resource("redoc")
+        redoc_resource.add_method(
             "GET",
             apigateway.LambdaIntegration(
                 self.webhook_receiver_lambda,
