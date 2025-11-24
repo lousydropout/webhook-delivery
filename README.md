@@ -38,51 +38,36 @@ This system provides a complete webhook delivery infrastructure that:
 
 **System Diagram:**
 
+```mermaid
 graph LR
-%% External caller sends events
-A[External System] -->|POST /v1/events<br/>Bearer Token| B[API Gateway<br/>hooks.vincentchan.cloud]
-
-    %% Auth layer
+    A[External System] -->|POST /v1/events<br/>Bearer Token| B[API Gateway<br/>hooks.vincentchan.cloud]
     B -->|Validate Token| C[(DynamoDB<br/>TenantIdentity)]
     B -->|Authorized| D[API Lambda<br/>FastAPI]
-
-    %% Store + enqueue event
     D -->|Store Event| E[(DynamoDB<br/>Events)]
     D -->|Enqueue| F[SQS Queue]
-
-    %% Worker processes event
     F -->|Trigger| G[Worker Lambda]
-    G -->|Fetch Event| E
-    G -->|Fetch Webhook Config| H[(DynamoDB<br/>TenantWebhookConfig)]
-
-    %% Delivery target — single destination
-    G -->|HTTP POST + HMAC| I[Tenant Webhook Endpoint<br/>(targetUrl)]
-
-    %% Demo mode: tenant's targetUrl *points to* Receiver Service
-    I -.->|In Demo: targetUrl resolves to| J[Receiver API Gateway<br/>receiver.vincentchan.cloud]
-
-    J -->|Validate HMAC| K[Webhook Receiver Lambda]
+    G -->|Read Event| E
+    G -->|Read Webhook Config| H[(DynamoDB<br/>TenantWebhookConfig)]
+    G -->|Deliver with<br/>HMAC| I[Tenant Webhook<br/>Endpoint]
+    G -.->|Deliver to<br/>Built-in Receiver| J[Receiver API Gateway<br/>receiver.vincentchan.cloud]
+    J -->|Validate HMAC| K[Webhook Receiver<br/>Lambda]
     K -->|Lookup Secret| H
+    F -->|After 5 Retries| L[Dead Letter<br/>Queue]
+    L -.->|Manual Requeue| M[DLQ Processor<br/>Lambda]
+    M -.->|Requeue| F
 
-    %% DLQ Flow
-    F -->|After 5 Failures| L[Dead Letter Queue]
-    L -.->|Manual Requeue| M[DLQ Processor Lambda]
-    M -.->|Requeue to SQS| F
-
-
-    %% Styling
     style B fill:#f9f,stroke:#333,color:#000
     style D fill:#f9f,stroke:#333,color:#000
     style G fill:#f9f,stroke:#333,color:#000
     style M fill:#f9f,stroke:#333,color:#000
     style J fill:#f9f,stroke:#333,color:#000
     style K fill:#f9f,stroke:#333,color:#000
-
     style C fill:#bbf,stroke:#333,color:#000
     style H fill:#bbf,stroke:#333,color:#000
     style E fill:#bbf,stroke:#333,color:#000
     style F fill:#bfb,stroke:#333,color:#000
     style L fill:#fbb,stroke:#333,color:#000
+```
 
 **Event Lifecycle:**
 
