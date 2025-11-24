@@ -9,7 +9,7 @@
 #### Create Event
 
 ```http
-POST /events
+POST /v1/events
 ```
 
 Ingest an event for webhook delivery.
@@ -50,7 +50,7 @@ Status: `201 Created`
 **Example:**
 
 ```bash
-curl -X POST https://hooks.vincentchan.cloud/events \
+curl -X POST https://hooks.vincentchan.cloud/v1/events \
   -H "Authorization: Bearer tenant_acme_live_abc123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -63,7 +63,98 @@ curl -X POST https://hooks.vincentchan.cloud/events \
 
 ---
 
-## Test Webhook Receiver
+## Production Webhook Receiver
+
+**Base URL:** `https://receiver.vincentchan.cloud`
+
+The production webhook receiver validates HMAC signatures and can be used as a webhook endpoint for testing or production use.
+
+### Receive Webhook
+
+#### Webhook Endpoint
+
+```http
+POST /{tenantId}/webhook
+```
+
+Receive and validate webhooks with HMAC signatures. The `tenantId` in the path is used to look up the webhook secret from DynamoDB.
+
+**Headers:**
+- `Content-Type: application/json` (required)
+- `Stripe-Signature: t=<timestamp>,v1=<hmac_signature>` (required)
+
+**Request Body:**
+
+The original event payload (JSON).
+
+**Response:**
+
+Status: `200 OK`
+
+```json
+{
+  "status": "received",
+  "tenant_id": "test-tenant"
+}
+```
+
+**Errors:**
+
+- `401 Unauthorized` - Missing or invalid signature
+- `404 Not Found` - Tenant not found or inactive
+
+**Example:**
+
+```bash
+curl -X POST https://receiver.vincentchan.cloud/test-tenant/webhook \
+  -H "Content-Type: application/json" \
+  -H "Stripe-Signature: t=1700000000,v1=abc123..." \
+  -d '{"event": "test.event", "event_id": "evt_123"}'
+```
+
+#### Health Check
+
+```http
+GET /health
+```
+
+Check if the webhook receiver is running.
+
+**Response:**
+
+Status: `200 OK`
+
+```json
+{
+  "status": "healthy",
+  "service": "webhook-receiver"
+}
+```
+
+**Example:**
+
+```bash
+curl https://receiver.vincentchan.cloud/health
+```
+
+#### API Documentation
+
+```http
+GET /docs
+```
+
+Swagger UI documentation for the receiver API.
+
+**Example:**
+
+```bash
+# Open in browser:
+https://receiver.vincentchan.cloud/docs
+```
+
+---
+
+## Test Webhook Receiver (Local)
 
 **Base URL:** `http://localhost:5000` (local testing only)
 
@@ -176,6 +267,10 @@ These endpoints are accessed programmatically by the Lambda functions.
 - Trigger: Manual invocation
 - Function: Requeue messages from DLQ to main queue
 - Payload: `{"batchSize": 10, "maxMessages": 100}`
+
+**Webhook Receiver Lambda:** `Vincent-TriggerApi-WebhookReceiver`
+- Trigger: API Gateway (receiver.vincentchan.cloud)
+- Function: Multi-tenant webhook validation with HMAC signature verification
 
 ---
 

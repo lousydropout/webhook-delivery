@@ -22,13 +22,15 @@ This system provides a complete webhook delivery infrastructure that:
 - **Webhook Receiver Lambda** (FastAPI): Multi-tenant webhook validation with HMAC verification
 - **DLQ Processor Lambda**: Manual requeue for failed deliveries
 - **DynamoDB**: Event and tenant data with TTL support
-- **Custom Domain**: hooks.vincentchan.cloud (REGIONAL endpoint with ACM SSL)
+- **Custom Domains**: 
+  - hooks.vincentchan.cloud (Main API - REGIONAL endpoint with ACM SSL)
+  - receiver.vincentchan.cloud (Webhook Receiver - REGIONAL endpoint with ACM SSL)
 
 **System Diagram:**
 
 ```mermaid
 graph LR
-    A[External System] -->|POST /v1/events<br/>Bearer Token| B[API Gateway<br/>Authorizer]
+    A[External System] -->|POST /v1/events<br/>Bearer Token| B[API Gateway<br/>hooks.vincentchan.cloud]
     B -->|Validate Token| C[(DynamoDB<br/>TenantApiKeys)]
     B -->|Authorized| D[API Lambda<br/>FastAPI]
     D -->|Store Event| E[(DynamoDB<br/>Events)]
@@ -37,6 +39,9 @@ graph LR
     G -->|Read Event| E
     G -->|Read Webhook Secret| C
     G -->|Deliver with<br/>HMAC| H[Tenant Webhook<br/>Endpoint]
+    G -.->|Deliver to<br/>Built-in Receiver| K[Receiver API Gateway<br/>receiver.vincentchan.cloud]
+    K -->|Validate HMAC| L[Webhook Receiver<br/>Lambda]
+    L -->|Lookup Secret| C
     F -->|After 5 Retries| I[Dead Letter<br/>Queue]
     I -.->|Manual Requeue| J[DLQ Processor<br/>Lambda]
     J -.->|Requeue| F
@@ -45,6 +50,8 @@ graph LR
     style D fill:#f9f,stroke:#333,color:#000
     style G fill:#f9f,stroke:#333,color:#000
     style J fill:#f9f,stroke:#333,color:#000
+    style K fill:#f9f,stroke:#333,color:#000
+    style L fill:#f9f,stroke:#333,color:#000
     style C fill:#bbf,stroke:#333,color:#000
     style E fill:#bbf,stroke:#333,color:#000
     style F fill:#bfb,stroke:#333,color:#000
@@ -179,20 +186,20 @@ The system includes a production-ready webhook receiver Lambda for end-to-end te
 
 **Health Check:**
 ```bash
-GET https://hooks.vincentchan.cloud/v1/receiver/health
+GET https://receiver.vincentchan.cloud/health
 # Response: {"status": "healthy", "service": "webhook-receiver"}
 ```
 
 **Webhook Reception:**
 ```bash
-POST https://hooks.vincentchan.cloud/v1/receiver/{tenantId}/webhook
+POST https://receiver.vincentchan.cloud/{tenantId}/webhook
 # Headers: Stripe-Signature: t={timestamp},v1={signature}
 # Response: {"status": "received", "tenant_id": "{tenantId}"}
 ```
 
 **API Documentation:**
 ```bash
-GET https://hooks.vincentchan.cloud/v1/receiver/docs  # Swagger UI
+GET https://receiver.vincentchan.cloud/docs  # Swagger UI
 ```
 
 ### Features
@@ -247,7 +254,7 @@ curl -X POST https://hooks.vincentchan.cloud/v1/events \
 If tenant's `targetUrl` is set to the receiver Lambda:
 
 ```bash
-# targetUrl: https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook
+# targetUrl: https://receiver.vincentchan.cloud/test-tenant/webhook
 ```
 
 **What happens:**
@@ -296,7 +303,7 @@ sequenceDiagram
     Worker->>Worker: Generate HMAC Signature
 
     Note over Client,Receiver: Step 3: Webhook Delivery
-    Worker->>Receiver: POST /v1/receiver/{tenantId}/webhook<br/>Stripe-Signature: t=...,v1=...
+    Worker->>Receiver: POST receiver.vincentchan.cloud/{tenantId}/webhook<br/>Stripe-Signature: t=...,v1=...
     Receiver->>DB: Lookup Webhook Secret
     DB-->>Receiver: webhookSecret
     Receiver->>Receiver: Validate HMAC Signature
@@ -326,7 +333,7 @@ print(f"Payload: {payload}")
 EOF
 
 # 2. Send webhook with valid signature
-curl -X POST https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook \
+curl -X POST https://receiver.vincentchan.cloud/test-tenant/webhook \
   -H "Content-Type: application/json" \
   -H "Stripe-Signature: t=1700000000,v1=..." \
   -d '{"test": true, "event_id": "evt_123"}'
@@ -334,7 +341,7 @@ curl -X POST https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook \
 # Expected: 200 {"status":"received","tenant_id":"test-tenant"}
 
 # 3. Test invalid signature (should fail)
-curl -X POST https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook \
+curl -X POST https://receiver.vincentchan.cloud/test-tenant/webhook \
   -H "Content-Type: application/json" \
   -H "Stripe-Signature: t=12345,v1=invalid" \
   -d '{"test": true}'
@@ -367,7 +374,7 @@ aws dynamodb update-item \
   --key '{"apiKey": {"S": "tenant_test-tenant_key"}}' \
   --update-expression "SET targetUrl = :url" \
   --expression-attribute-values '{
-    ":url": {"S": "https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook"}
+    ":url": {"S": "https://receiver.vincentchan.cloud/test-tenant/webhook"}
   }'
 ```
 

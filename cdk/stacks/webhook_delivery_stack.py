@@ -50,13 +50,21 @@ class WebhookDeliveryStack(Stack):
         )
 
         # ============================================================
-        # ACM Certificate for Custom Domain
+        # ACM Certificates for Custom Domains
         # ============================================================
-        domain_name = f"hooks.{hosted_zone_url}"
-        certificate = acm.Certificate(
+        hooks_domain_name = f"hooks.{hosted_zone_url}"
+        hooks_certificate = acm.Certificate(
             self,
             "TriggerApiCert",
-            domain_name=domain_name,
+            domain_name=hooks_domain_name,
+            validation=acm.CertificateValidation.from_dns(zone),
+        )
+
+        receiver_domain_name = f"receiver.{hosted_zone_url}"
+        receiver_certificate = acm.Certificate(
+            self,
+            "ReceiverApiCert",
+            domain_name=receiver_domain_name,
             validation=acm.CertificateValidation.from_dns(zone),
         )
 
@@ -376,23 +384,30 @@ class WebhookDeliveryStack(Stack):
         )
 
         # ============================================================
-        # Webhook Receiver Endpoints (No Authentication Required)
+        # Receiver API Gateway (Separate from Main API)
         # ============================================================
-        # Create /v1/receiver resource
-        receiver_resource = v1_resource.add_resource("receiver")
-
-        # Health check endpoint
-        health_resource = receiver_resource.add_resource("health")
-        health_resource.add_method(
-            "GET",
-            apigateway.LambdaIntegration(
-                self.webhook_receiver_lambda,
-                proxy=True,
+        self.receiver_api = apigateway.RestApi(
+            self,
+            "ReceiverApi",
+            rest_api_name="Webhook Receiver API",
+            description="Multi-tenant webhook receiver with HMAC validation",
+            deploy_options=apigateway.StageOptions(
+                stage_name="prod",
+                throttling_rate_limit=1000,
+                throttling_burst_limit=2000,
+            ),
+            default_cors_preflight_options=apigateway.CorsOptions(
+                allow_origins=["*"],
+                allow_methods=apigateway.Cors.ALL_METHODS,
+                allow_headers=[
+                    "Content-Type",
+                    "Stripe-Signature",
+                ],
             ),
         )
 
-        # Tenant-specific webhook endpoint: /v1/receiver/{tenantId}/webhook
-        tenant_resource = receiver_resource.add_resource("{tenantId}")
+        # Tenant-specific webhook endpoint: /{tenantId}/webhook
+        tenant_resource = self.receiver_api.root.add_resource("{tenantId}")
         webhook_resource = tenant_resource.add_resource("webhook")
 
         # POST method for webhook reception (no auth - validated via HMAC)
@@ -401,9 +416,6 @@ class WebhookDeliveryStack(Stack):
             apigateway.LambdaIntegration(
                 self.webhook_receiver_lambda,
                 proxy=True,
-                request_templates={
-                    "application/json": '{"statusCode": 200}'
-                },
             ),
             request_parameters={
                 "method.request.path.tenantId": True,
@@ -411,9 +423,9 @@ class WebhookDeliveryStack(Stack):
             },
         )
 
-        # Documentation endpoints (if needed)
-        docs_receiver_resource = receiver_resource.add_resource("docs")
-        docs_receiver_resource.add_method(
+        # Health check endpoint: /health
+        health_resource = self.receiver_api.root.add_resource("health")
+        health_resource.add_method(
             "GET",
             apigateway.LambdaIntegration(
                 self.webhook_receiver_lambda,
@@ -421,30 +433,67 @@ class WebhookDeliveryStack(Stack):
             ),
         )
 
-        # Custom domain mapping (REGIONAL endpoint, no base path)
-        custom_domain = apigateway.DomainName(
+        # Documentation endpoints: /docs
+        docs_resource = self.receiver_api.root.add_resource("docs")
+        docs_resource.add_method(
+            "GET",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+        )
+
+        # Custom domain mapping for hooks API (REGIONAL endpoint, no base path)
+        hooks_custom_domain = apigateway.DomainName(
             self,
             "TriggerApiCustomDomain",
-            domain_name=domain_name,
-            certificate=certificate,
+            domain_name=hooks_domain_name,
+            certificate=hooks_certificate,
             endpoint_type=apigateway.EndpointType.REGIONAL,
         )
 
         # Map to root path (empty base path - no stripping needed)
-        custom_domain.add_base_path_mapping(
+        hooks_custom_domain.add_base_path_mapping(
             self.api,
             base_path="",  # Empty = root path, no base path stripping
             stage=self.api.deployment_stage,
         )
 
-        # DNS A record
+        # DNS A record for hooks API
         route53.ARecord(
             self,
             "TriggerApiAliasRecord",
             zone=zone,
             record_name="hooks",
             target=route53.RecordTarget.from_alias(
-                targets.ApiGatewayDomain(custom_domain)
+                targets.ApiGatewayDomain(hooks_custom_domain)
+            ),
+        )
+
+        # Custom domain mapping for receiver API (REGIONAL endpoint, no base path)
+        receiver_custom_domain = apigateway.DomainName(
+            self,
+            "ReceiverApiCustomDomain",
+            domain_name=receiver_domain_name,
+            certificate=receiver_certificate,
+            endpoint_type=apigateway.EndpointType.REGIONAL,
+        )
+
+        # Map to root path (empty base path - no stripping needed)
+        receiver_custom_domain.add_base_path_mapping(
+            self.receiver_api,
+            base_path="",  # Empty = root path, no base path stripping
+            stage=self.receiver_api.deployment_stage,
+        )
+
+        # DNS A record for receiver API
+        route53.ARecord(
+            self,
+            "ReceiverApiAliasRecord",
+            zone=zone,
+            record_name="receiver",
+            target=route53.RecordTarget.from_alias(
+                targets.ApiGatewayDomain(receiver_custom_domain)
             ),
         )
 
@@ -478,7 +527,7 @@ class WebhookDeliveryStack(Stack):
         CfnOutput(
             self,
             "CustomDomainUrl",
-            value=f"https://{custom_domain.domain_name}",
+            value=f"https://{hooks_custom_domain.domain_name}",
         )
 
         # Webhook Receiver Outputs
@@ -491,14 +540,21 @@ class WebhookDeliveryStack(Stack):
 
         CfnOutput(
             self,
+            "WebhookReceiverDomainUrl",
+            value=f"https://{receiver_custom_domain.domain_name}",
+            description="Webhook receiver custom domain URL",
+        )
+
+        CfnOutput(
+            self,
             "WebhookReceiverEndpoint",
-            value=f"https://hooks.{hosted_zone_url}/v1/receiver/{{tenantId}}/webhook",
+            value=f"https://receiver.{hosted_zone_url}/{{tenantId}}/webhook",
             description="Webhook receiver endpoint URL template",
         )
 
         CfnOutput(
             self,
             "WebhookReceiverHealthEndpoint",
-            value=f"https://hooks.{hosted_zone_url}/v1/receiver/health",
+            value=f"https://receiver.{hosted_zone_url}/health",
             description="Webhook receiver health check endpoint",
         )

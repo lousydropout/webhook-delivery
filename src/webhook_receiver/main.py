@@ -17,9 +17,9 @@ app = FastAPI(
     title="Webhook Receiver",
     description="Multi-tenant webhook receiver with HMAC validation",
     version="2.0.0",
-    docs_url="/v1/receiver/docs",
-    redoc_url="/v1/receiver/redoc",
-    openapi_url="/v1/receiver/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
 
 # Module-level DynamoDB initialization (Lambda best practice)
@@ -74,7 +74,7 @@ def verify_signature(payload: str, signature_header: str, webhook_secret: str) -
         return False
 
 
-@app.post("/v1/receiver/{tenant_id}/webhook")
+@app.post("/{tenant_id}/webhook")
 async def receive_webhook(
     tenant_id: str,
     request: Request,
@@ -115,7 +115,7 @@ async def receive_webhook(
     return {"status": "received", "tenant_id": tenant_id}
 
 
-@app.get("/v1/receiver/health")
+@app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy", "service": "webhook-receiver"}

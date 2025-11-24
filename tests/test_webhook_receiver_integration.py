@@ -20,6 +20,7 @@ from typing import Dict, Any
 class WebhookIntegrationTest:
     def __init__(self):
         self.api_base = "https://hooks.vincentchan.cloud"
+        self.receiver_base = "https://receiver.vincentchan.cloud"
         self.tenant_id = "test-tenant"
         self.api_key = "tenant_test-tenant_key"
 
@@ -36,7 +37,7 @@ class WebhookIntegrationTest:
 
         # Test receiver health endpoint
         print("\n1. Testing webhook receiver health endpoint...")
-        response = requests.get(f"{self.api_base}/v1/receiver/health")
+        response = requests.get(f"{self.receiver_base}/health")
         assert response.status_code == 200, f"Health check failed: {response.status_code}"
         data = response.json()
         assert data["status"] == "healthy", f"Unexpected health status: {data}"
