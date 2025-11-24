@@ -40,14 +40,14 @@ graph LR
     I -.->|Manual Requeue| J[DLQ Processor<br/>Lambda]
     J -.->|Requeue| F
 
-    style B fill:#f9f,stroke:#333
-    style D fill:#f9f,stroke:#333
-    style G fill:#f9f,stroke:#333
-    style J fill:#f9f,stroke:#333
-    style C fill:#bbf,stroke:#333
-    style E fill:#bbf,stroke:#333
-    style F fill:#bfb,stroke:#333
-    style I fill:#fbb,stroke:#333
+    style B fill:#f9f,stroke:#333,color:#000
+    style D fill:#f9f,stroke:#333,color:#000
+    style G fill:#f9f,stroke:#333,color:#000
+    style J fill:#f9f,stroke:#333,color:#000
+    style C fill:#bbf,stroke:#333,color:#000
+    style E fill:#bbf,stroke:#333,color:#000
+    style F fill:#bfb,stroke:#333,color:#000
+    style I fill:#fbb,stroke:#333,color:#000
 ```
 
 **Event Lifecycle:**
