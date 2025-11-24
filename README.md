@@ -19,6 +19,7 @@ This system provides a complete webhook delivery infrastructure that:
 - **API Lambda** (FastAPI): Event ingestion with tenant context from authorizer
 - **SQS Queue**: Reliable message queue with 5 retry attempts
 - **Worker Lambda**: Webhook delivery with HMAC signature generation
+- **Webhook Receiver Lambda** (FastAPI): Multi-tenant webhook validation with HMAC verification
 - **DLQ Processor Lambda**: Manual requeue for failed deliveries
 - **DynamoDB**: Event and tenant data with TTL support
 - **Custom Domain**: hooks.vincentchan.cloud (REGIONAL endpoint with ACM SSL)
@@ -167,6 +168,242 @@ curl -X POST https://hooks.vincentchan.cloud/v1/events \
 
 See [Webhook Integration Guide](docs/WEBHOOK_INTEGRATION.md) for complete receiver implementation with signature verification.
 
+## Webhook Receiver Lambda
+
+The system includes a production-ready webhook receiver Lambda for end-to-end testing and demonstration. This receiver validates HMAC signatures and can be used as a reference implementation or actual webhook endpoint.
+
+### Endpoints
+
+**Health Check:**
+```bash
+GET https://hooks.vincentchan.cloud/v1/receiver/health
+# Response: {"status": "healthy", "service": "webhook-receiver"}
+```
+
+**Webhook Reception:**
+```bash
+POST https://hooks.vincentchan.cloud/v1/receiver/{tenantId}/webhook
+# Headers: Stripe-Signature: t={timestamp},v1={signature}
+# Response: {"status": "received", "tenant_id": "{tenantId}"}
+```
+
+**API Documentation:**
+```bash
+GET https://hooks.vincentchan.cloud/v1/receiver/docs  # Swagger UI
+```
+
+### Features
+
+- ✅ **Multi-tenant Support**: Each tenant has unique URL path
+- ✅ **Dynamic Secret Retrieval**: Webhook secrets fetched from DynamoDB per request
+- ✅ **HMAC Signature Validation**: Stripe-style signature verification
+- ✅ **No Authentication Required**: Security via HMAC signatures only
+- ✅ **Automatic Tenant Lookup**: Validates tenant exists and is active
+- ✅ **Performance**: <200ms validation time, 256MB memory footprint
+
+### User Flow: Complete End-to-End Webhook Delivery
+
+Here's how the entire system works from event creation to webhook validation:
+
+#### Step 1: Create Event via API
+
+```bash
+# Tenant sends event to API
+curl -X POST https://hooks.vincentchan.cloud/v1/events \
+  -H "Authorization: Bearer tenant_test-tenant_key" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "user.signup", "user_id": "123", "email": "user@example.com"}'
+
+# Response: {"event_id": "evt_abc123", "status": "PENDING"}
+```
+
+**What happens:**
+1. API Gateway validates Bearer token via Lambda Authorizer
+2. Authorizer looks up API key in DynamoDB, returns tenant context
+3. API Lambda creates event in DynamoDB with status `PENDING`
+4. API Lambda enqueues message to SQS: `{tenantId, eventId}`
+5. Returns 201 response to caller
+
+#### Step 2: Worker Processes Event
+
+```bash
+# Automatic - SQS triggers Worker Lambda
+```
+
+**What happens:**
+1. Worker Lambda receives SQS message
+2. Worker reads event from DynamoDB (gets payload, targetUrl, webhookSecret)
+3. Worker generates Stripe-style HMAC signature:
+   - Signed payload: `{timestamp}.{json_payload}`
+   - Signature: `HMAC-SHA256(signed_payload, webhookSecret)`
+   - Header: `Stripe-Signature: t={timestamp},v1={signature}`
+4. Worker makes HTTP POST to tenant's `targetUrl`
+
+#### Step 3: Receiver Validates Webhook
+
+If tenant's `targetUrl` is set to the receiver Lambda:
+
+```bash
+# targetUrl: https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook
+```
+
+**What happens:**
+1. Receiver extracts `tenant_id` from URL path
+2. Receiver looks up webhook secret from DynamoDB for that tenant
+3. Receiver validates HMAC signature:
+   - Extracts timestamp and signature from `Stripe-Signature` header
+   - Reconstructs signed payload: `{timestamp}.{request_body}`
+   - Computes expected signature: `HMAC-SHA256(signed_payload, webhookSecret)`
+   - Compares using constant-time comparison
+4. Receiver returns:
+   - `200 OK` if signature valid: `{"status": "received", "tenant_id": "test-tenant"}`
+   - `401 Unauthorized` if signature invalid or missing
+   - `404 Not Found` if tenant doesn't exist
+
+#### Step 4: Worker Updates Status
+
+**What happens:**
+1. Worker receives 200 response from receiver
+2. Worker updates DynamoDB event status: `PENDING` → `DELIVERED`
+3. Worker deletes message from SQS (successful processing)
+4. Event remains in DynamoDB until TTL expires (30 days)
+
+### Complete Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant Client as External Client
+    participant API as API Gateway + Lambda
+    participant DB as DynamoDB
+    participant SQS as SQS Queue
+    participant Worker as Worker Lambda
+    participant Receiver as Receiver Lambda
+
+    Note over Client,Receiver: Step 1: Event Creation
+    Client->>API: POST /v1/events + Bearer Token
+    API->>DB: Validate API Key
+    API->>DB: Create Event (PENDING)
+    API->>SQS: Enqueue {tenantId, eventId}
+    API-->>Client: 201 {event_id, status: PENDING}
+
+    Note over Client,Receiver: Step 2: Async Processing (12-18s later)
+    SQS->>Worker: Trigger with Message
+    Worker->>DB: Get Event + Tenant Config
+    DB-->>Worker: {payload, targetUrl, webhookSecret}
+    Worker->>Worker: Generate HMAC Signature
+
+    Note over Client,Receiver: Step 3: Webhook Delivery
+    Worker->>Receiver: POST /v1/receiver/{tenantId}/webhook<br/>Stripe-Signature: t=...,v1=...
+    Receiver->>DB: Lookup Webhook Secret
+    DB-->>Receiver: webhookSecret
+    Receiver->>Receiver: Validate HMAC Signature
+    Receiver-->>Worker: 200 OK {"status": "received"}
+
+    Note over Client,Receiver: Step 4: Status Update
+    Worker->>DB: Update Status: DELIVERED
+    Worker->>SQS: Delete Message (Success)
+```
+
+### Testing the Receiver
+
+**Test with curl:**
+
+```bash
+# 1. Generate valid signature
+python3 << 'EOF'
+import time, hmac, hashlib, json
+
+secret = "whsec_test123"  # Your webhook secret
+payload = json.dumps({"test": True, "event_id": "evt_123"})
+timestamp = str(int(time.time()))
+signed = f"{timestamp}.{payload}"
+signature = hmac.new(secret.encode(), signed.encode(), hashlib.sha256).hexdigest()
+print(f"Stripe-Signature: t={timestamp},v1={signature}")
+print(f"Payload: {payload}")
+EOF
+
+# 2. Send webhook with valid signature
+curl -X POST https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook \
+  -H "Content-Type: application/json" \
+  -H "Stripe-Signature: t=1700000000,v1=..." \
+  -d '{"test": true, "event_id": "evt_123"}'
+
+# Expected: 200 {"status":"received","tenant_id":"test-tenant"}
+
+# 3. Test invalid signature (should fail)
+curl -X POST https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook \
+  -H "Content-Type: application/json" \
+  -H "Stripe-Signature: t=12345,v1=invalid" \
+  -d '{"test": true}'
+
+# Expected: 401 {"detail":"Invalid signature"}
+```
+
+**Run integration tests:**
+
+```bash
+# Comprehensive end-to-end test
+python3 tests/test_webhook_receiver_integration.py
+
+# Tests:
+# ✓ Health endpoint responding
+# ✓ Event creation via API
+# ✓ Webhook delivery to receiver
+# ✓ HMAC signature validation
+# ✓ Status updates in DynamoDB
+# ✓ Concurrent event handling
+```
+
+### Configuration
+
+To use the receiver Lambda as your webhook endpoint, update your tenant configuration:
+
+```bash
+aws dynamodb update-item \
+  --table-name Vincent-TriggerApi-TenantApiKeys \
+  --key '{"apiKey": {"S": "tenant_test-tenant_key"}}' \
+  --update-expression "SET targetUrl = :url" \
+  --expression-attribute-values '{
+    ":url": {"S": "https://hooks.vincentchan.cloud/v1/receiver/test-tenant/webhook"}
+  }'
+```
+
+### Monitoring Receiver
+
+```bash
+# View receiver logs
+aws logs tail /aws/lambda/Vincent-TriggerApi-WebhookReceiver --follow
+
+# Check recent successful validations
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/Vincent-TriggerApi-WebhookReceiver \
+  --filter-pattern "Valid webhook received" \
+  --start-time $(($(date +%s - 3600) * 1000))
+
+# Check signature validation failures
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/Vincent-TriggerApi-WebhookReceiver \
+  --filter-pattern "Invalid signature" \
+  --start-time $(($(date +%s - 3600) * 1000))
+```
+
+### Performance Characteristics
+
+- **Cold Start**: ~1.7 seconds (Python 3.12 + FastAPI + Mangum)
+- **Warm Execution**: 2-177ms (typically <50ms)
+- **Memory Usage**: 105-107 MB / 256 MB allocated
+- **Timeout**: 10 seconds (validation completes in <1s)
+- **Concurrent Capacity**: 1000 concurrent executions (AWS default)
+- **DynamoDB Scan**: Acceptable for <100 tenants (add GSI if scaling beyond)
+
+### Security Notes
+
+- **No API Authentication**: Receiver endpoints are public (HMAC provides security)
+- **Signature Validation**: Uses constant-time comparison to prevent timing attacks
+- **Timestamp Included**: Signature includes timestamp to prevent replay attacks
+- **Tenant Isolation**: Each tenant has unique URL and secret
+- **No Secrets Logged**: Webhook secrets never appear in CloudWatch logs
+
 ## Monitoring
 
 ```bash
@@ -203,10 +440,13 @@ zapier/
 │   │   └── requirements.txt            # FastAPI, Mangum, boto3, pydantic
 │   ├── worker/                         # Webhook Delivery Lambda
 │   │   ├── handler.py                  # SQS event processor
-│   │   ├── delivery.py                 # HTTP webhook delivery
+│   │   ├── delivery.py                 # HTTP webhook delivery (with DecimalEncoder)
 │   │   ├── signatures.py               # HMAC signature generation
 │   │   ├── dynamo.py                   # Event status updates
 │   │   └── requirements.txt            # boto3, requests
+│   ├── webhook_receiver/               # Webhook Receiver Lambda
+│   │   ├── main.py                     # FastAPI app + Mangum handler
+│   │   └── requirements.txt            # fastapi, mangum, boto3
 │   └── dlq_processor/                  # DLQ Requeue Lambda
 │       ├── handler.py                  # Manual DLQ requeue
 │       └── requirements.txt
@@ -214,7 +454,11 @@ zapier/
 │   ├── deploy.sh                       # Automated deployment
 │   └── seed_webhooks.py                # Test tenant seeding
 ├── tests/
-│   ├── webhook_receiver.py             # FastAPI test receiver
+│   ├── webhook_receiver.py             # Local FastAPI test receiver
+│   ├── webhook_receiver_local.py       # Local test with mock DynamoDB
+│   ├── test_webhook_receiver_manual.py # Unit tests for signature validation
+│   ├── test_webhook_receiver_integration.py # End-to-end integration tests
+│   ├── test_with_curl_simple.sh        # Curl-based testing script
 │   └── requirements.txt
 ├── docs/
 │   └── WEBHOOK_INTEGRATION.md          # Integration guide

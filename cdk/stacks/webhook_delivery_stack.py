@@ -279,6 +279,37 @@ class WebhookDeliveryStack(Stack):
         self.events_queue.grant_send_messages(self.dlq_processor_lambda)
 
         # ============================================================
+        # Webhook Receiver Lambda (Multi-tenant Webhook Validation)
+        # ============================================================
+        self.webhook_receiver_lambda = lambda_.Function(
+            self,
+            "WebhookReceiverLambda",
+            function_name=f"{prefix}-WebhookReceiver",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="main.handler",
+            code=lambda_.Code.from_asset(
+                "../src/webhook_receiver",
+                bundling=BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install -r requirements.txt -t /asset-output && "
+                        + "cp -r . /asset-output",
+                    ],
+                ),
+            ),
+            timeout=Duration.seconds(10),  # Webhook validation should be fast
+            memory_size=256,  # Minimal memory needed for signature validation
+            environment={
+                "TENANT_API_KEYS_TABLE": self.tenant_api_keys_table.table_name,
+            },
+        )
+
+        # Grant read access to tenant API keys table
+        self.tenant_api_keys_table.grant_read_data(self.webhook_receiver_lambda)
+
+        # ============================================================
         # API Gateway Token Authorizer
         # ============================================================
         self.token_authorizer = apigateway.TokenAuthorizer(
@@ -344,6 +375,52 @@ class WebhookDeliveryStack(Stack):
             authorizer=self.token_authorizer,
         )
 
+        # ============================================================
+        # Webhook Receiver Endpoints (No Authentication Required)
+        # ============================================================
+        # Create /v1/receiver resource
+        receiver_resource = v1_resource.add_resource("receiver")
+
+        # Health check endpoint
+        health_resource = receiver_resource.add_resource("health")
+        health_resource.add_method(
+            "GET",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+        )
+
+        # Tenant-specific webhook endpoint: /v1/receiver/{tenantId}/webhook
+        tenant_resource = receiver_resource.add_resource("{tenantId}")
+        webhook_resource = tenant_resource.add_resource("webhook")
+
+        # POST method for webhook reception (no auth - validated via HMAC)
+        webhook_resource.add_method(
+            "POST",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+                request_templates={
+                    "application/json": '{"statusCode": 200}'
+                },
+            ),
+            request_parameters={
+                "method.request.path.tenantId": True,
+                "method.request.header.Stripe-Signature": False,
+            },
+        )
+
+        # Documentation endpoints (if needed)
+        docs_receiver_resource = receiver_resource.add_resource("docs")
+        docs_receiver_resource.add_method(
+            "GET",
+            apigateway.LambdaIntegration(
+                self.webhook_receiver_lambda,
+                proxy=True,
+            ),
+        )
+
         # Custom domain mapping (REGIONAL endpoint, no base path)
         custom_domain = apigateway.DomainName(
             self,
@@ -402,4 +479,26 @@ class WebhookDeliveryStack(Stack):
             self,
             "CustomDomainUrl",
             value=f"https://{custom_domain.domain_name}",
+        )
+
+        # Webhook Receiver Outputs
+        CfnOutput(
+            self,
+            "WebhookReceiverFunctionName",
+            value=self.webhook_receiver_lambda.function_name,
+            description="Webhook receiver Lambda function name",
+        )
+
+        CfnOutput(
+            self,
+            "WebhookReceiverEndpoint",
+            value=f"https://hooks.{hosted_zone_url}/v1/receiver/{{tenantId}}/webhook",
+            description="Webhook receiver endpoint URL template",
+        )
+
+        CfnOutput(
+            self,
+            "WebhookReceiverHealthEndpoint",
+            value=f"https://hooks.{hosted_zone_url}/v1/receiver/health",
+            description="Webhook receiver health check endpoint",
         )
