@@ -24,7 +24,9 @@ app = FastAPI(
 
 # Module-level DynamoDB initialization (Lambda best practice)
 dynamodb = boto3.resource("dynamodb")
-tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+tenant_webhook_config_table = dynamodb.Table(
+    os.environ["TENANT_WEBHOOK_CONFIG_TABLE"]
+)
 
 # In-memory cache for tenant enabled/disabled state
 # Key: tenant_id, Value: bool (True = enabled, False = disabled)
@@ -34,18 +36,17 @@ tenant_state_cache: Dict[str, bool] = {}
 
 def get_webhook_secret_for_tenant(tenant_id: str) -> Optional[str]:
     """
-    Retrieve webhook secret for a tenant from DynamoDB.
-    Uses scan with filter (table is small enough for this pattern).
+    Retrieve webhook secret for a tenant from TenantWebhookConfig table.
+
+    Reads only webhook delivery configuration (targetUrl, webhookSecret).
+    Does not access TenantIdentity table (authentication data).
     """
     try:
-        response = tenant_api_keys_table.scan(
-            FilterExpression="tenantId = :tid",
-            ExpressionAttributeValues={":tid": tenant_id},
-        )
+        response = tenant_webhook_config_table.get_item(Key={"tenantId": tenant_id})
+        item = response.get("Item")
 
-        items = response.get("Items", [])
-        if items and items[0].get("isActive"):
-            return items[0].get("webhookSecret")
+        if item:
+            return item.get("webhookSecret")
 
         return None
     except Exception as e:

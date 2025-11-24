@@ -68,13 +68,22 @@ class WebhookDeliveryStack(Stack):
         )
 
         # ============================================================
-        # DynamoDB: TenantApiKeys
-        # Schema: apiKey (PK) → { tenantId, targetUrl, webhookSecret, isActive }
+        # DynamoDB: TenantIdentity
+        # Schema: apiKey (PK) → { tenantId, status, plan, createdAt }
+        #
+        # Purpose: Authentication and tenant identity only.
+        # Contains NO webhook secrets or delivery configuration.
+        #
+        # Security Model:
+        # - Lambda Authorizer reads this table to validate API keys
+        # - Authorizer uses ProjectionExpression to limit fields retrieved
+        # - Authorizer NEVER has access to TenantWebhookConfig (webhook secrets)
+        # - API Lambda can read/write for tenant management (demo purposes)
         # ============================================================
-        self.tenant_api_keys_table = dynamodb.Table(
+        self.tenant_identity_table = dynamodb.Table(
             self,
-            "TenantApiKeys",
-            table_name=f"{prefix}-TenantApiKeys",
+            "TenantIdentity",
+            table_name=f"{prefix}-TenantIdentity",
             partition_key=dynamodb.Attribute(
                 name="apiKey",
                 type=dynamodb.AttributeType.STRING,
@@ -84,13 +93,30 @@ class WebhookDeliveryStack(Stack):
             point_in_time_recovery=False,
         )
 
-        # Add GSI for efficient tenantId lookups (used by get_tenant_by_id and update_tenant_config_by_id)
-        self.tenant_api_keys_table.add_global_secondary_index(
-            index_name="tenantId-index",
+        # ============================================================
+        # DynamoDB: TenantWebhookConfig
+        # Schema: tenantId (PK) → { targetUrl, webhookSecret, rotationHistory, lastUpdated }
+        #
+        # Purpose: Webhook delivery configuration only.
+        # Contains webhook secrets and target URLs for delivery.
+        #
+        # Security Model:
+        # - Worker Lambda reads this table to get webhook secrets for HMAC signing
+        # - Webhook Receiver Lambda reads this table to validate HMAC signatures
+        # - Authorizer Lambda NEVER has access (enforced by IAM)
+        # - API Lambda can read/write for tenant management (demo purposes)
+        # ============================================================
+        self.tenant_webhook_config_table = dynamodb.Table(
+            self,
+            "TenantWebhookConfig",
+            table_name=f"{prefix}-TenantWebhookConfig",
             partition_key=dynamodb.Attribute(
                 name="tenantId",
                 type=dynamodb.AttributeType.STRING,
             ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=RemovalPolicy.DESTROY,
+            point_in_time_recovery=False,
         )
 
         # ============================================================
@@ -98,6 +124,11 @@ class WebhookDeliveryStack(Stack):
         # Schema: tenantId (PK), eventId (SK)
         # GSI: status-index (status PK, createdAt SK)
         # Attributes: status, payload, targetUrl, attempts, lastAttemptAt, ttl
+        #
+        # createdAt Schema: Stored as STRING containing epoch seconds (e.g., "1700000000").
+        # This format ensures correct lexicographical ordering for GSI queries and is
+        # consistent across all code paths (create_event, update_event_status).
+        # Example: str(int(time.time())) → "1700000000"
         # ============================================================
         self.events_table = dynamodb.Table(
             self,
@@ -125,7 +156,7 @@ class WebhookDeliveryStack(Stack):
             ),
             sort_key=dynamodb.Attribute(
                 name="createdAt",
-                type=dynamodb.AttributeType.STRING,
+                type=dynamodb.AttributeType.STRING,  # Epoch seconds as string: "1700000000"
             ),
             projection_type=dynamodb.ProjectionType.ALL,
         )
@@ -141,11 +172,17 @@ class WebhookDeliveryStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # Visibility timeout must exceed Worker Lambda timeout to prevent
+        # duplicate processing. Worker timeout is 60s, so visibility timeout
+        # is set to 180s (3x) to account for Lambda overhead and retries.
+        # If Lambda fails, message becomes visible again after 180s.
         self.events_queue = sqs.Queue(
             self,
             "EventsQueue",
             queue_name=f"{prefix}-EventsQueue",
-            visibility_timeout=Duration.seconds(60),
+            visibility_timeout=Duration.seconds(
+                180
+            ),  # Must be > Worker Lambda timeout (60s)
             retention_period=Duration.days(4),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=5,
@@ -179,13 +216,21 @@ class WebhookDeliveryStack(Stack):
             timeout=Duration.seconds(30),
             memory_size=1024,
             environment={
-                "TENANT_API_KEYS_TABLE": self.tenant_api_keys_table.table_name,
+                "TENANT_IDENTITY_TABLE": self.tenant_identity_table.table_name,
+                "TENANT_WEBHOOK_CONFIG_TABLE": self.tenant_webhook_config_table.table_name,
                 "EVENTS_TABLE": self.events_table.table_name,
                 "EVENTS_QUEUE_URL": self.events_queue.queue_url,
             },
         )
 
-        self.tenant_api_keys_table.grant_read_write_data(self.api_lambda)
+        # API Lambda IAM Permissions (Least Privilege):
+        # - Read/write TenantIdentity: Tenant creation and management
+        # - Read/write TenantWebhookConfig: Webhook config updates
+        # - Read/write Events: Event ingestion and retrieval
+        # - Send to SQS: Enqueue events for delivery
+        # Note: API Lambda has broader access for demo/tenant management purposes.
+        self.tenant_identity_table.grant_read_write_data(self.api_lambda)
+        self.tenant_webhook_config_table.grant_read_write_data(self.api_lambda)
         self.events_table.grant_read_write_data(self.api_lambda)
         self.events_queue.grant_send_messages(self.api_lambda)
 
@@ -214,11 +259,16 @@ class WebhookDeliveryStack(Stack):
             timeout=Duration.seconds(10),
             memory_size=256,
             environment={
-                "TENANT_API_KEYS_TABLE": self.tenant_api_keys_table.table_name,
+                "TENANT_IDENTITY_TABLE": self.tenant_identity_table.table_name,
             },
         )
 
-        self.tenant_api_keys_table.grant_read_data(self.authorizer_lambda)
+        # Authorizer Lambda IAM Permissions (Strict Least Privilege):
+        # - Read-only TenantIdentity: Validates API keys, returns tenant context
+        # - NO access to TenantWebhookConfig: Never sees webhook secrets
+        # - NO access to Events: Authentication only, no event data
+        # - Uses ProjectionExpression in code to limit fields retrieved
+        self.tenant_identity_table.grant_read_data(self.authorizer_lambda)
 
         # ============================================================
         # Worker Lambda (Webhook Delivery)
@@ -245,19 +295,23 @@ class WebhookDeliveryStack(Stack):
             timeout=Duration.seconds(60),
             memory_size=1024,
             environment={
-                "TENANT_API_KEYS_TABLE": self.tenant_api_keys_table.table_name,
+                "TENANT_WEBHOOK_CONFIG_TABLE": self.tenant_webhook_config_table.table_name,
                 "EVENTS_TABLE": self.events_table.table_name,
             },
         )
 
+        # Worker Lambda IAM Permissions (Least Privilege):
+        # - Read/write Events: Update event delivery status
+        # - Read-only TenantWebhookConfig: Get webhook secrets and target URLs
+        # - NO access to TenantIdentity: Does not need authentication data
         self.events_table.grant_read_write_data(self.worker_lambda)
-        self.tenant_api_keys_table.grant_read_data(self.worker_lambda)
+        self.tenant_webhook_config_table.grant_read_data(self.worker_lambda)
 
         self.worker_lambda.add_event_source(
             lambda_events.SqsEventSource(
                 self.events_queue,
                 batch_size=10,
-                max_batching_window=Duration.seconds(1),
+                max_batching_window=Duration.seconds(0),
             )
         )
 
@@ -318,12 +372,15 @@ class WebhookDeliveryStack(Stack):
             timeout=Duration.seconds(10),  # Webhook validation should be fast
             memory_size=256,  # Minimal memory needed for signature validation
             environment={
-                "TENANT_API_KEYS_TABLE": self.tenant_api_keys_table.table_name,
+                "TENANT_WEBHOOK_CONFIG_TABLE": self.tenant_webhook_config_table.table_name,
             },
         )
 
-        # Grant read access to tenant API keys table
-        self.tenant_api_keys_table.grant_read_data(self.webhook_receiver_lambda)
+        # Webhook Receiver Lambda IAM Permissions (Least Privilege):
+        # - Read-only TenantWebhookConfig: Get webhook secrets for HMAC validation
+        # - NO access to TenantIdentity: Does not need authentication data
+        # - NO access to Events: Validation only, does not modify events
+        self.tenant_webhook_config_table.grant_read_data(self.webhook_receiver_lambda)
 
         # ============================================================
         # API Gateway Token Authorizer
@@ -339,6 +396,11 @@ class WebhookDeliveryStack(Stack):
         # ============================================================
         # API Gateway with Custom Domain
         # ============================================================
+        # API Gateway Structure:
+        # - /v1/docs, /v1/redoc, /v1/openapi.json: Public documentation (no auth)
+        # - /v1/events/*: Event ingestion endpoints (requires authorizer)
+        # - /v1/tenants: Tenant management (POST public, GET/PATCH require authorizer)
+        #
         # Create RestApi manually to support explicit /v1/{proxy+} resource
         self.api = apigateway.RestApi(
             self,
@@ -418,9 +480,10 @@ class WebhookDeliveryStack(Stack):
             },
         )
 
-        # PATCH /v1/events/{eventId} - Update event (replaces retry)
-        event_id_resource.add_method(
-            "PATCH",
+        # POST /v1/events/{eventId}/retry - Retry failed event
+        retry_resource = event_id_resource.add_resource("retry")
+        retry_resource.add_method(
+            "POST",
             lambda_integration,
             authorization_type=apigateway.AuthorizationType.CUSTOM,
             authorizer=self.token_authorizer,
@@ -576,6 +639,9 @@ class WebhookDeliveryStack(Stack):
         )
 
         # Custom domain mapping for hooks API (REGIONAL endpoint, no base path)
+        # REGIONAL endpoint type provides better latency and lower cost than EDGE.
+        # Empty base_path ("") maps domain directly to API root, so URLs are:
+        # https://hooks.vincentchan.cloud/v1/events (not /prod/v1/events)
         hooks_custom_domain = apigateway.DomainName(
             self,
             "TriggerApiCustomDomain",
@@ -585,6 +651,7 @@ class WebhookDeliveryStack(Stack):
         )
 
         # Map to root path (empty base path - no stripping needed)
+        # This allows clean URLs without stage prefix in the path
         hooks_custom_domain.add_base_path_mapping(
             self.api,
             base_path="",  # Empty = root path, no base path stripping
@@ -603,6 +670,8 @@ class WebhookDeliveryStack(Stack):
         )
 
         # Custom domain mapping for receiver API (REGIONAL endpoint, no base path)
+        # Same pattern as hooks API: REGIONAL endpoint with root path mapping
+        # URLs: https://receiver.vincentchan.cloud/{tenantId}/webhook
         receiver_custom_domain = apigateway.DomainName(
             self,
             "ReceiverApiCustomDomain",
@@ -634,8 +703,14 @@ class WebhookDeliveryStack(Stack):
         # ============================================================
         CfnOutput(
             self,
-            "TenantApiKeysTableName",
-            value=self.tenant_api_keys_table.table_name,
+            "TenantIdentityTableName",
+            value=self.tenant_identity_table.table_name,
+        )
+
+        CfnOutput(
+            self,
+            "TenantWebhookConfigTableName",
+            value=self.tenant_webhook_config_table.table_name,
         )
 
         CfnOutput(

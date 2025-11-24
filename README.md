@@ -19,11 +19,14 @@ This system provides a complete webhook delivery infrastructure that:
 
 - **Lambda Authorizer**: API Gateway authorizer for Bearer token validation (5-min cache)
 - **API Lambda** (FastAPI): Event ingestion with tenant context from authorizer
-- **SQS Queue**: Reliable message queue with 5 retry attempts
+- **SQS Queue**: Reliable message queue with 5 retry attempts (180s visibility timeout > 60s Lambda timeout)
 - **Worker Lambda**: Webhook delivery with HMAC signature generation
 - **Webhook Receiver Lambda** (FastAPI): Multi-tenant webhook validation with HMAC verification
 - **DLQ Processor Lambda**: Manual requeue for failed deliveries
-- **DynamoDB**: Event and tenant data with TTL support
+- **DynamoDB**: Three tables with strict separation of concerns:
+  - **TenantIdentity**: API keys → tenant identity (authentication only)
+  - **TenantWebhookConfig**: tenantId → webhook delivery config (targetUrl, webhookSecret)
+  - **Events**: Event storage with TTL support
 - **Custom Domains**:
   - hooks.vincentchan.cloud (Main API - REGIONAL endpoint with ACM SSL)
   - receiver.vincentchan.cloud (Webhook Receiver - REGIONAL endpoint with ACM SSL)
@@ -33,31 +36,32 @@ This system provides a complete webhook delivery infrastructure that:
 ```mermaid
 graph LR
     A[External System] -->|POST /v1/events<br/>Bearer Token| B[API Gateway<br/>hooks.vincentchan.cloud]
-    B -->|Validate Token| C[(DynamoDB<br/>TenantApiKeys)]
+    B -->|Validate Token| C[(DynamoDB<br/>TenantIdentity)]
     B -->|Authorized| D[API Lambda<br/>FastAPI]
     D -->|Store Event| E[(DynamoDB<br/>Events)]
     D -->|Enqueue| F[SQS Queue]
     F -->|Trigger| G[Worker Lambda]
     G -->|Read Event| E
-    G -->|Read Webhook Secret| C
-    G -->|Deliver with<br/>HMAC| H[Tenant Webhook<br/>Endpoint]
-    G -.->|Deliver to<br/>Built-in Receiver| K[Receiver API Gateway<br/>receiver.vincentchan.cloud]
-    K -->|Validate HMAC| L[Webhook Receiver<br/>Lambda]
-    L -->|Lookup Secret| C
-    F -->|After 5 Retries| I[Dead Letter<br/>Queue]
-    I -.->|Manual Requeue| J[DLQ Processor<br/>Lambda]
-    J -.->|Requeue| F
+    G -->|Read Webhook Config| H[(DynamoDB<br/>TenantWebhookConfig)]
+    G -->|Deliver with<br/>HMAC| I[Tenant Webhook<br/>Endpoint]
+    G -.->|Deliver to<br/>Built-in Receiver| J[Receiver API Gateway<br/>receiver.vincentchan.cloud]
+    J -->|Validate HMAC| K[Webhook Receiver<br/>Lambda]
+    K -->|Lookup Secret| H
+    F -->|After 5 Retries| L[Dead Letter<br/>Queue]
+    L -.->|Manual Requeue| M[DLQ Processor<br/>Lambda]
+    M -.->|Requeue| F
 
     style B fill:#f9f,stroke:#333,color:#000
     style D fill:#f9f,stroke:#333,color:#000
     style G fill:#f9f,stroke:#333,color:#000
+    style M fill:#f9f,stroke:#333,color:#000
     style J fill:#f9f,stroke:#333,color:#000
     style K fill:#f9f,stroke:#333,color:#000
-    style L fill:#f9f,stroke:#333,color:#000
     style C fill:#bbf,stroke:#333,color:#000
+    style H fill:#bbf,stroke:#333,color:#000
     style E fill:#bbf,stroke:#333,color:#000
     style F fill:#bfb,stroke:#333,color:#000
-    style I fill:#fbb,stroke:#333,color:#000
+    style L fill:#fbb,stroke:#333,color:#000
 ```
 
 **Event Lifecycle:**
@@ -82,35 +86,39 @@ sequenceDiagram
     participant AGW as API Gateway
     participant Auth as Authorizer Lambda
     participant API as API Lambda
-    participant DB as DynamoDB
+    participant TenantIdentity as TenantIdentity Table
+    participant TenantWebhookConfig as TenantWebhookConfig Table
+    participant Events as Events Table
     participant SQS as SQS Queue
     participant Worker as Worker Lambda
     participant Tenant as Tenant Server
 
     Ext->>AGW: POST /v1/events + Bearer Token
     AGW->>Auth: Validate Token
-    Auth->>DB: Lookup API Key
-    DB-->>Auth: Tenant Config
+    Auth->>TenantIdentity: Lookup API Key (projection: tenantId, status, plan)
+    TenantIdentity-->>Auth: Tenant Identity (no secrets)
     Auth-->>AGW: Allow + Tenant Context (cached 5min)
     AGW->>API: Invoke with Tenant Context
-    API->>DB: Create Event (PENDING)
+    API->>TenantWebhookConfig: Get targetUrl
+    TenantWebhookConfig-->>API: targetUrl
+    API->>Events: Create Event (PENDING)
     API->>SQS: Enqueue {tenantId, eventId}
     API-->>Ext: 201 {event_id, status}
 
     SQS->>Worker: Trigger with Message
-    Worker->>DB: Get Event Details
-    DB-->>Worker: Event (payload, targetUrl)
-    Worker->>DB: Get Tenant Config
-    DB-->>Worker: Tenant Config (webhookSecret)
+    Worker->>Events: Get Event Details
+    Events-->>Worker: Event (payload, targetUrl)
+    Worker->>TenantWebhookConfig: Get Webhook Config
+    TenantWebhookConfig-->>Worker: Config (targetUrl, webhookSecret)
     Worker->>Worker: Generate HMAC Signature
     Worker->>Tenant: POST Webhook + Stripe-Signature
 
     alt Success
         Tenant-->>Worker: 200 OK
-        Worker->>DB: Update Status: DELIVERED
+        Worker->>Events: Update Status: DELIVERED
     else Failure
         Tenant-->>Worker: 5xx Error
-        Worker->>DB: Update Status: FAILED
+        Worker->>Events: Update Status: FAILED
         Worker->>SQS: Return Error (Retry)
     end
 ```
@@ -333,33 +341,37 @@ If tenant's `targetUrl` is set to the receiver Lambda:
 sequenceDiagram
     participant Client as External Client
     participant API as API Gateway + Lambda
-    participant DB as DynamoDB
+    participant TenantIdentity as TenantIdentity Table
+    participant TenantWebhookConfig as TenantWebhookConfig Table
+    participant Events as Events Table
     participant SQS as SQS Queue
     participant Worker as Worker Lambda
     participant Receiver as Receiver Lambda
 
     Note over Client,Receiver: Step 1: Event Creation
     Client->>API: POST /v1/events + Bearer Token
-    API->>DB: Validate API Key
-    API->>DB: Create Event (PENDING)
+    API->>TenantIdentity: Validate API Key
+    API->>TenantWebhookConfig: Get targetUrl
+    API->>Events: Create Event (PENDING)
     API->>SQS: Enqueue {tenantId, eventId}
     API-->>Client: 201 {event_id, status: PENDING}
 
     Note over Client,Receiver: Step 2: Async Processing (1-2s later)
     SQS->>Worker: Trigger with Message
-    Worker->>DB: Get Event + Tenant Config
-    DB-->>Worker: {payload, targetUrl, webhookSecret}
+    Worker->>Events: Get Event Details
+    Worker->>TenantWebhookConfig: Get Webhook Config
+    TenantWebhookConfig-->>Worker: {targetUrl, webhookSecret}
     Worker->>Worker: Generate HMAC Signature
 
     Note over Client,Receiver: Step 3: Webhook Delivery
     Worker->>Receiver: POST receiver.vincentchan.cloud/{tenantId}/webhook<br/>Stripe-Signature: t=...,v1=...
-    Receiver->>DB: Lookup Webhook Secret
-    DB-->>Receiver: webhookSecret
+    Receiver->>TenantWebhookConfig: Lookup Webhook Secret
+    TenantWebhookConfig-->>Receiver: webhookSecret
     Receiver->>Receiver: Validate HMAC Signature
     Receiver-->>Worker: 200 OK {"status": "received"}
 
     Note over Client,Receiver: Step 4: Status Update
-    Worker->>DB: Update Status: DELIVERED
+    Worker->>Events: Update Status: DELIVERED
     Worker->>SQS: Delete Message (Success)
 ```
 
@@ -419,11 +431,12 @@ To use the receiver Lambda as your webhook endpoint, update your tenant configur
 
 ```bash
 aws dynamodb update-item \
-  --table-name Vincent-TriggerApi-TenantApiKeys \
-  --key '{"apiKey": {"S": "tenant_test-tenant_key"}}' \
-  --update-expression "SET targetUrl = :url" \
+  --table-name Vincent-TriggerApi-TenantWebhookConfig \
+  --key '{"tenantId": {"S": "test-tenant"}}' \
+  --update-expression "SET targetUrl = :url, lastUpdated = :timestamp" \
   --expression-attribute-values '{
-    ":url": {"S": "https://receiver.vincentchan.cloud/test-tenant/webhook"}
+    ":url": {"S": "https://receiver.vincentchan.cloud/test-tenant/webhook"},
+    ":timestamp": {"N": "1700000000"}
   }'
 ```
 
@@ -530,9 +543,23 @@ aws sqs receive-message \
 
 Each tenant needs:
 
-- **API Key**: For authentication when posting events
-- **Webhook Secret**: For HMAC signature generation
-- **Target URL**: Where webhooks will be delivered
+- **API Key**: For authentication when posting events (stored in `TenantIdentity` table)
+- **Webhook Secret**: For HMAC signature generation (stored in `TenantWebhookConfig` table)
+- **Target URL**: Where webhooks will be delivered (stored in `TenantWebhookConfig` table)
+
+**Architecture Note**: Tenant data is split across two DynamoDB tables for security:
+
+- **TenantIdentity**: Contains API keys and tenant identity (tenantId, status, plan)
+- **TenantWebhookConfig**: Contains webhook delivery configuration (targetUrl, webhookSecret)
+
+**Security Model**:
+
+- **Lambda Authorizer**: Reads only `TenantIdentity` with ProjectionExpression. Never has access to `TenantWebhookConfig` (webhook secrets). This enforces least-privilege: authentication code cannot access delivery secrets.
+- **Worker Lambda**: Reads `TenantWebhookConfig` for webhook delivery. Does not need `TenantIdentity` (authentication data).
+- **Webhook Receiver Lambda**: Reads `TenantWebhookConfig` for HMAC validation. Does not need `TenantIdentity` or `Events`.
+- **API Lambda**: Has read/write access to both tables for tenant management (demo purposes). In production, tenant creation would be handled internally.
+
+**SQS Visibility Timeout**: Set to 180 seconds (3x Worker Lambda timeout of 60s) to prevent duplicate processing. If a Lambda invocation fails or times out, the message becomes visible again after 180s, ensuring no message is lost while preventing duplicates during normal processing.
 
 **Option 1: Programmatic Creation (Recommended)**
 
@@ -540,7 +567,6 @@ Use the RESTful API endpoint:
 
 ```bash
 curl -X POST https://hooks.vincentchan.cloud/v1/tenants \
-  -H "Authorization: Bearer <existing-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "tenant_id": "acme",
@@ -557,11 +583,38 @@ python scripts/seed_webhooks.py
 
 **Option 3: Direct DynamoDB**
 
-Add tenant directly to DynamoDB table `Vincent-TriggerApi-TenantApiKeys`.
+Add tenant to both tables:
 
-### Event Schema
+- `TenantIdentity`: `{apiKey: "tenant_acme_key", tenantId: "acme", status: "active", plan: "free", createdAt: "..."}`
+- `TenantWebhookConfig`: `{tenantId: "acme", targetUrl: "https://...", webhookSecret: "whsec_...", lastUpdated: "..."}`
 
-Events are stored with:
+### DynamoDB Schema
+
+**TenantIdentity Table** (PK: `apiKey`):
+
+```python
+{
+    "apiKey": "tenant_acme_key",
+    "tenantId": "acme",
+    "status": "active" | "disabled",
+    "plan": "free" | "pro",
+    "createdAt": "1700000000"
+}
+```
+
+**TenantWebhookConfig Table** (PK: `tenantId`):
+
+```python
+{
+    "tenantId": "acme",
+    "targetUrl": "https://example.com/webhook",
+    "webhookSecret": "whsec_...",
+    "rotationHistory": ["whsec_old1", "whsec_old2"],  # Optional
+    "lastUpdated": "1700000000"
+}
+```
+
+**Events Table** (PK: `tenantId`, SK: `eventId`):
 
 ```python
 {
@@ -570,13 +623,17 @@ Events are stored with:
     "status": "PENDING" | "DELIVERED" | "FAILED",
     "createdAt": "1700000000",
     "payload": {...},           # Your event data
-    "targetUrl": "https://...",
-    "webhookSecret": "whsec_...",
+    "targetUrl": "https://...",  # Snapshot at event creation time
     "attempts": 0,
     "lastAttemptAt": "1700000000",
-    "ttl": 1702592000          # Auto-delete after 30 days
+    "ttl": 1702592000          # Auto-delete after 365 days
 }
 ```
+
+**Schema Notes**:
+
+- `createdAt` and `lastAttemptAt` are stored as strings containing epoch seconds (e.g., `"1700000000"`). This format ensures correct lexicographical ordering in the GSI and is consistent across all code paths.
+- Events store a snapshot of `targetUrl` at creation time. The Worker Lambda reads the current `targetUrl` and `webhookSecret` from `TenantWebhookConfig` for delivery.
 
 ## Testing
 
@@ -594,10 +651,13 @@ ngrok http 5000
 
 # Terminal 3: Update tenant and send test event
 aws dynamodb update-item \
-  --table-name Vincent-TriggerApi-TenantApiKeys \
-  --key '{"apiKey": {"S": "YOUR_API_KEY"}}' \
-  --update-expression "SET targetUrl = :url" \
-  --expression-attribute-values '{":url": {"S": "https://YOUR_NGROK_URL/webhook"}}'
+  --table-name Vincent-TriggerApi-TenantWebhookConfig \
+  --key '{"tenantId": {"S": "YOUR_TENANT_ID"}}' \
+  --update-expression "SET targetUrl = :url, lastUpdated = :timestamp" \
+  --expression-attribute-values '{
+    ":url": {"S": "https://YOUR_NGROK_URL/webhook"},
+    ":timestamp": {"N": "1700000000"}
+  }'
 
 curl -X POST https://hooks.vincentchan.cloud/v1/events \
   -H "Authorization: Bearer YOUR_API_KEY" \

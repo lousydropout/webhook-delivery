@@ -2,10 +2,26 @@ import os
 import uuid
 import time
 import boto3
+from decimal import Decimal
 from typing import Dict, Any, Optional
 
 dynamodb = boto3.resource("dynamodb")
 events_table = dynamodb.Table(os.environ["EVENTS_TABLE"])
+
+
+def convert_floats_to_decimals(obj: Any) -> Any:
+    """
+    Recursively convert float values to Decimal for DynamoDB compatibility.
+    DynamoDB requires Decimal type for numbers, not Python float.
+    """
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    elif isinstance(obj, dict):
+        return {k: convert_floats_to_decimals(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_floats_to_decimals(item) for item in obj]
+    else:
+        return obj
 
 
 def create_event(tenant_id: str, payload: Dict[str, Any], target_url: str) -> str:
@@ -20,12 +36,15 @@ def create_event(tenant_id: str, payload: Dict[str, Any], target_url: str) -> st
     # TTL: 1 year from now (365 days for auditing purposes)
     ttl = int(created_at + (365 * 24 * 60 * 60))
 
+    # Convert floats to Decimals for DynamoDB compatibility
+    payload_decimal = convert_floats_to_decimals(payload)
+
     item = {
         "tenantId": tenant_id,
         "eventId": event_id,
         "status": "PENDING",
         "createdAt": str(int(created_at)),
-        "payload": payload,
+        "payload": payload_decimal,
         "targetUrl": target_url,
         "attempts": 0,
         "ttl": ttl,
@@ -121,6 +140,7 @@ def get_event(tenant_id: str, event_id: str) -> Optional[Dict[str, Any]]:
 def reset_event_for_retry(tenant_id: str, event_id: str) -> bool:
     """
     Reset a FAILED event to PENDING status for manual retry.
+    Preserves attempt count to maintain retry history.
 
     Args:
         tenant_id: Tenant identifier
@@ -131,18 +151,18 @@ def reset_event_for_retry(tenant_id: str, event_id: str) -> bool:
     """
     try:
         # Update only if status is FAILED (prevent retrying PENDING/DELIVERED events)
+        # Keep attempts count to preserve retry history
         response = events_table.update_item(
             Key={
                 "tenantId": tenant_id,
                 "eventId": event_id,
             },
-            UpdateExpression="SET #status = :pending, attempts = :zero REMOVE errorMessage",
+            UpdateExpression="SET #status = :pending REMOVE errorMessage",
             ConditionExpression="#status = :failed",
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={
                 ":pending": "PENDING",
                 ":failed": "FAILED",
-                ":zero": 0,
             },
             ReturnValues="ALL_NEW",
         )
@@ -160,6 +180,10 @@ def create_tenant(
 ) -> Dict[str, Any]:
     """
     Create a new tenant with API key.
+
+    Writes to two separate tables:
+    - TenantIdentity: API key → tenant identity (for authentication)
+    - TenantWebhookConfig: tenantId → webhook config (for delivery)
 
     Args:
         tenant_id: Unique tenant identifier (e.g., "acme", "globex")
@@ -181,7 +205,10 @@ def create_tenant(
     import secrets
     import string
 
-    tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+    tenant_identity_table = dynamodb.Table(os.environ["TENANT_IDENTITY_TABLE"])
+    tenant_webhook_config_table = dynamodb.Table(
+        os.environ["TENANT_WEBHOOK_CONFIG_TABLE"]
+    )
 
     # Generate API key
     api_key = f"tenant_{tenant_id}_key"
@@ -195,17 +222,27 @@ def create_tenant(
     timestamp = str(int(time.time()))
 
     try:
-        # Use ConditionExpression to ensure tenant doesn't already exist
-        tenant_api_keys_table.put_item(
+        # Write to TenantIdentity table (authentication data)
+        tenant_identity_table.put_item(
             Item={
                 "apiKey": api_key,
                 "tenantId": tenant_id,
-                "targetUrl": target_url,
-                "webhookSecret": webhook_secret,
+                "status": "active",
+                "plan": "free",  # Default plan
                 "createdAt": timestamp,
-                "updatedAt": timestamp,
             },
             ConditionExpression="attribute_not_exists(apiKey)",
+        )
+
+        # Write to TenantWebhookConfig table (webhook delivery data)
+        tenant_webhook_config_table.put_item(
+            Item={
+                "tenantId": tenant_id,
+                "targetUrl": target_url,
+                "webhookSecret": webhook_secret,
+                "lastUpdated": timestamp,
+            },
+            ConditionExpression="attribute_not_exists(tenantId)",
         )
 
         return {
@@ -215,10 +252,19 @@ def create_tenant(
             "webhook_secret": webhook_secret,
             "created_at": timestamp,
         }
-    except tenant_api_keys_table.meta.client.exceptions.ConditionalCheckFailedException:
+    except tenant_identity_table.meta.client.exceptions.ConditionalCheckFailedException:
         raise ValueError(f"Tenant with ID '{tenant_id}' already exists")
     except Exception as e:
         print(f"Error creating tenant {tenant_id}: {e}")
+        # Cleanup: if one table write succeeded, try to rollback
+        try:
+            tenant_identity_table.delete_item(Key={"apiKey": api_key})
+        except:
+            pass
+        try:
+            tenant_webhook_config_table.delete_item(Key={"tenantId": tenant_id})
+        except:
+            pass
         raise
 
 
@@ -226,7 +272,7 @@ def get_tenant_by_id(tenant_id: str) -> Optional[Dict[str, Any]]:
     """
     Get tenant details by tenant ID.
 
-    Uses GSI on tenantId for efficient lookups.
+    Reads from TenantWebhookConfig table (does not include webhook secret in response).
 
     Args:
         tenant_id: Tenant identifier
@@ -234,29 +280,24 @@ def get_tenant_by_id(tenant_id: str) -> Optional[Dict[str, Any]]:
     Returns:
         Tenant data (excluding webhook secret for security) or None if not found
     """
-    tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+    tenant_webhook_config_table = dynamodb.Table(
+        os.environ["TENANT_WEBHOOK_CONFIG_TABLE"]
+    )
 
     try:
-        # Use GSI query instead of scan for efficient lookup
-        response = tenant_api_keys_table.query(
-            IndexName="tenantId-index",
-            KeyConditionExpression="tenantId = :tid",
-            ExpressionAttributeValues={":tid": tenant_id},
-        )
+        # Query TenantWebhookConfig table directly (tenantId is PK)
+        response = tenant_webhook_config_table.get_item(Key={"tenantId": tenant_id})
 
-        items = response.get("Items", [])
-        if not items:
+        item = response.get("Item")
+        if not item:
             return None
 
-        tenant = items[0]
-
-        # Remove webhook secret from response for security
-        # (only return it on creation or when explicitly updated)
+        # Return tenant config without webhook secret
         tenant_safe = {
-            "tenant_id": tenant["tenantId"],
-            "target_url": tenant["targetUrl"],
-            "created_at": tenant.get("createdAt", ""),
-            "updated_at": tenant.get("updatedAt", ""),
+            "tenant_id": tenant_id,
+            "target_url": item.get("targetUrl", ""),
+            "created_at": item.get("lastUpdated", ""),  # Use lastUpdated as created_at proxy
+            "updated_at": item.get("lastUpdated", ""),
         }
 
         return tenant_safe
@@ -271,9 +312,10 @@ def update_tenant_config_by_id(
     webhook_secret: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Update tenant configuration by tenant ID.
+    Update tenant webhook configuration by tenant ID.
 
-    Uses GSI on tenantId to find API key efficiently.
+    Updates TenantWebhookConfig table only (webhook delivery config).
+    Does not modify TenantIdentity (authentication data).
 
     Args:
         tenant_id: Tenant identifier
@@ -286,20 +328,19 @@ def update_tenant_config_by_id(
     Raises:
         ValueError: If tenant not found or no fields to update
     """
-    tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
-
-    # Use GSI query to find API key for this tenant
-    response = tenant_api_keys_table.query(
-        IndexName="tenantId-index",
-        KeyConditionExpression="tenantId = :tid",
-        ExpressionAttributeValues={":tid": tenant_id},
+    tenant_webhook_config_table = dynamodb.Table(
+        os.environ["TENANT_WEBHOOK_CONFIG_TABLE"]
     )
 
-    items = response.get("Items", [])
-    if not items:
+    # Check if tenant exists
+    try:
+        response = tenant_webhook_config_table.get_item(Key={"tenantId": tenant_id})
+        if not response.get("Item"):
+            raise ValueError(f"Tenant {tenant_id} not found")
+    except Exception as e:
+        if isinstance(e, ValueError):
+            raise
         raise ValueError(f"Tenant {tenant_id} not found")
-
-    api_key = items[0]["apiKey"]
 
     # Build update expression dynamically
     update_parts = []
@@ -311,20 +352,24 @@ def update_tenant_config_by_id(
 
     if webhook_secret:
         update_parts.append("webhookSecret = :secret")
+        # Optionally track rotation history
+        update_parts.append("lastUpdated = :timestamp")
         attr_values[":secret"] = webhook_secret
+        attr_values[":timestamp"] = str(int(time.time()))
 
     if not update_parts:
         raise ValueError("At least one field must be updated")
 
-    # Add updatedAt timestamp
-    update_parts.append("updatedAt = :timestamp")
-    attr_values[":timestamp"] = str(int(time.time()))
+    # Add lastUpdated timestamp if not already added
+    if "lastUpdated" not in update_parts:
+        update_parts.append("lastUpdated = :timestamp")
+        attr_values[":timestamp"] = str(int(time.time()))
 
     update_expression = "SET " + ", ".join(update_parts)
 
     try:
-        response = tenant_api_keys_table.update_item(
-            Key={"apiKey": api_key},
+        response = tenant_webhook_config_table.update_item(
+            Key={"tenantId": tenant_id},
             UpdateExpression=update_expression,
             ExpressionAttributeValues=attr_values,
             ReturnValues="ALL_NEW",

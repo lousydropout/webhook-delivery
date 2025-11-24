@@ -20,7 +20,6 @@ from models import (
     EventListItem,
     EventDetailResponse,
     EventDetail,
-    EventUpdate,
     TenantCreate,
     TenantCreateResponse,
     TenantConfigUpdate,
@@ -58,7 +57,15 @@ async def ingest_event(request: Request, payload: Dict[str, Any]):
         raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
 
     tenant_id = tenant["tenantId"]
-    target_url = tenant["targetUrl"]
+
+    # Fetch targetUrl from TenantWebhookConfig (not available in authorizer context)
+    tenant_config = get_tenant_by_id(tenant_id)
+    if not tenant_config:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Tenant {tenant_id} webhook configuration not found",
+        )
+    target_url = tenant_config["target_url"]
 
     # Store event in DynamoDB
     event_id = create_event(tenant_id, payload, target_url)
@@ -211,32 +218,28 @@ async def get_event_details(
     return EventDetailResponse(event=event_detail)
 
 
-@router.patch("/v1/events/{event_id}", response_model=EventDetail, tags=["Events"])
-async def update_event(
+@router.post("/v1/events/{event_id}/retry", response_model=EventDetail, tags=["Events"])
+async def retry_event(
     request: Request,
     event_id: str,
-    update: EventUpdate,
 ):
     """
-    Update an event's mutable fields.
+    Retry a failed event.
 
-    Currently supports:
-    - status: Change to "PENDING" to retry a FAILED event
-
-    Future: May support updating other fields like target_url, payload, etc.
+    Manually retry a FAILED event by resetting its status to PENDING and requeuing it for delivery.
+    The attempt count is preserved (not reset) to maintain retry history.
 
     Path Parameters:
     - event_id: The unique event identifier
 
-    Request Body:
-    - status: New status ("PENDING" to trigger retry)
+    Returns updated event details with status set to PENDING.
 
-    Returns updated event details.
     Authentication via Bearer token required (API Gateway Lambda Authorizer).
 
     Raises:
     - 404: Event not found or does not belong to authenticated tenant
-    - 400: Invalid status transition
+    - 400: Event is not in FAILED status (only FAILED events can be retried)
+    - 500: Failed to reset event status or requeue event
     """
     # Extract tenant context from Lambda Authorizer
     event_context = request.scope.get("aws.event", {})
@@ -257,48 +260,37 @@ async def update_event(
             detail=f"Event {event_id} not found or does not belong to your tenant",
         )
 
-    # Handle status update (retry logic)
-    if update.status:
-        if update.status == "PENDING":
-            # This is a retry operation
-            if event_data["status"] != "FAILED":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot retry event with status '{event_data['status']}'. Only FAILED events can be retried.",
-                )
+    # Verify event is in FAILED status
+    if event_data["status"] != "FAILED":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot retry event with status '{event_data['status']}'. Only FAILED events can be retried.",
+        )
 
-            # Reset event to PENDING in DynamoDB
-            success = reset_event_for_retry(tenant_id, event_id)
+    # Reset event to PENDING in DynamoDB (preserves attempt count)
+    success = reset_event_for_retry(tenant_id, event_id)
 
-            if not success:
-                raise HTTPException(
-                    status_code=500, detail="Failed to reset event status"
-                )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to reset event status")
 
-            # Requeue to SQS
-            message_body = json.dumps(
-                {
-                    "tenantId": tenant_id,
-                    "eventId": event_id,
-                }
-            )
+    # Requeue to SQS
+    message_body = json.dumps(
+        {
+            "tenantId": tenant_id,
+            "eventId": event_id,
+        }
+    )
 
-            try:
-                sqs.send_message(
-                    QueueUrl=EVENTS_QUEUE_URL,
-                    MessageBody=message_body,
-                )
-            except Exception as e:
-                print(f"Error requeuing event {event_id} to SQS: {e}")
-                raise HTTPException(
-                    status_code=500, detail="Failed to requeue event for delivery"
-                )
-        else:
-            # Future: Handle other status transitions
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid status transition to '{update.status}'",
-            )
+    try:
+        sqs.send_message(
+            QueueUrl=EVENTS_QUEUE_URL,
+            MessageBody=message_body,
+        )
+    except Exception as e:
+        print(f"Error requeuing event {event_id} to SQS: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to requeue event for delivery"
+        )
 
     # Fetch updated event
     updated_event_data = get_event(tenant_id, event_id)
@@ -322,7 +314,7 @@ async def update_event(
     "/v1/tenants",
     response_model=TenantCreateResponse,
     status_code=201,
-    tags=["Tenants"],
+    tags=["Demo Tenants"],
 )
 async def create_new_tenant(
     request: Request,
@@ -331,9 +323,12 @@ async def create_new_tenant(
     """
     Create a new tenant with auto-generated API key.
 
+    ⚠️ **Demo Only**: Tenant creation is included for demo convenience and is not part of the production interface. Zapier would supply tenant records internally.
+
     Request Body:
     - tenant_id: Unique tenant identifier (lowercase alphanumeric + hyphens)
-    - target_url: Webhook delivery URL (must be https)
+    - target_url: Webhook delivery URL (must be https). For the webhook receiver,
+      use format: `https://receiver.vincentchan.cloud/{tenant_id}/webhook`
     - webhook_secret: Optional HMAC secret (auto-generated if omitted)
 
     Returns the created tenant with API key and webhook secret.
@@ -369,7 +364,9 @@ async def create_new_tenant(
 
 
 @router.get(
-    "/v1/tenants/{tenant_id}", response_model=TenantDetailResponse, tags=["Tenants"]
+    "/v1/tenants/{tenant_id}",
+    response_model=TenantDetailResponse,
+    tags=["Demo Tenants"],
 )
 async def get_tenant(
     request: Request,
@@ -425,7 +422,9 @@ async def get_tenant(
 
 
 @router.patch(
-    "/v1/tenants/{tenant_id}", response_model=TenantConfigResponse, tags=["Tenants"]
+    "/v1/tenants/{tenant_id}",
+    response_model=TenantConfigResponse,
+    tags=["Demo Tenants"],
 )
 async def update_tenant(
     request: Request,

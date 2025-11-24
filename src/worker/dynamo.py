@@ -4,7 +4,9 @@ import boto3
 
 dynamodb = boto3.resource("dynamodb")
 events_table = dynamodb.Table(os.environ["EVENTS_TABLE"])
-tenant_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+tenant_webhook_config_table = dynamodb.Table(
+    os.environ["TENANT_WEBHOOK_CONFIG_TABLE"]
+)
 
 
 def get_event(tenant_id: str, event_id: str):
@@ -14,13 +16,18 @@ def get_event(tenant_id: str, event_id: str):
 
 
 def get_tenant_by_id(tenant_id: str):
-    """Get tenant config by scanning for tenantId"""
-    response = tenant_keys_table.scan(
-        FilterExpression="tenantId = :tid",
-        ExpressionAttributeValues={":tid": tenant_id},
-    )
-    items = response.get("Items", [])
-    return items[0] if items else None
+    """
+    Get tenant webhook configuration by tenantId.
+
+    Reads from TenantWebhookConfig table (contains targetUrl and webhookSecret).
+    Does not access TenantIdentity table (authentication data).
+    """
+    try:
+        response = tenant_webhook_config_table.get_item(Key={"tenantId": tenant_id})
+        return response.get("Item")
+    except Exception as e:
+        print(f"Error retrieving tenant webhook config for {tenant_id}: {e}")
+        return None
 
 
 def update_event_status(

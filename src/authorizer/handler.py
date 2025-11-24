@@ -3,20 +3,28 @@ import boto3
 from typing import Dict, Any, Optional
 
 dynamodb = boto3.resource("dynamodb")
-api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+tenant_identity_table = dynamodb.Table(os.environ["TENANT_IDENTITY_TABLE"])
 
 
 def get_tenant_from_api_key(api_key: str) -> Optional[Dict]:
     """
-    Look up tenant from API key in DynamoDB.
+    Look up tenant identity from API key in DynamoDB.
 
-    Returns tenant item if valid and active, None otherwise.
+    Uses projection expression to only retrieve tenantId, status, plan, createdAt.
+    Never accesses webhook secrets (stored in separate TenantWebhookConfig table).
+
+    Returns tenant identity if valid and active, None otherwise.
     """
     try:
-        response = api_keys_table.get_item(Key={"apiKey": api_key})
+        # Use ProjectionExpression to limit fields retrieved (least privilege)
+        response = tenant_identity_table.get_item(
+            Key={"apiKey": api_key},
+            ProjectionExpression="tenantId, #status, plan, createdAt",
+            ExpressionAttributeNames={"#status": "status"},
+        )
         item = response.get("Item")
 
-        if not item or not item.get("isActive"):
+        if not item or item.get("status") != "active":
             return None
 
         return item
@@ -92,11 +100,11 @@ def handler(event: Dict, context: Any) -> Dict:
     resource_arn = f"{arn_parts[0]}/*"
 
     tenant_id = tenant["tenantId"]
+    # Authorizer context only includes identity info (no webhook secrets)
     context_data = {
         "tenantId": tenant["tenantId"],
-        "targetUrl": tenant["targetUrl"],
-        "webhookSecret": tenant["webhookSecret"],
-        "isActive": tenant["isActive"],
+        "status": tenant.get("status", "active"),
+        "plan": tenant.get("plan", "free"),
     }
 
     print(f"Authorized tenant: {tenant_id}")

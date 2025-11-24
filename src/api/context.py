@@ -3,19 +3,23 @@ from typing import Dict, Any
 
 def get_tenant_from_context(event: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Extract tenant context from API Gateway authorizer.
+    Extract tenant identity from API Gateway authorizer.
 
     When using Lambda authorizer, API Gateway adds the authorizer's
     context to event['requestContext']['authorizer'].
+
+    The authorizer only returns tenant identity (tenantId, status, plan).
+    Webhook configuration (targetUrl, webhookSecret) is stored separately
+    in TenantWebhookConfig table and must be fetched when needed.
 
     Args:
         event: Lambda event from API Gateway
 
     Returns:
-        Tenant context dict with tenantId, targetUrl, webhookSecret, isActive
+        Tenant identity dict with tenantId, status, plan
 
     Raises:
-        KeyError: If authorizer context is missing (should not happen with proper config)
+        ValueError: If authorizer context is missing (should not happen with proper config)
     """
     authorizer = event.get("requestContext", {}).get("authorizer", {})
 
@@ -24,7 +28,6 @@ def get_tenant_from_context(event: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "tenantId": authorizer["tenantId"],
-        "targetUrl": authorizer["targetUrl"],
-        "webhookSecret": authorizer["webhookSecret"],
-        "isActive": authorizer["isActive"] == "True",  # API GW context is all strings
+        "status": authorizer.get("status", "active"),
+        "plan": authorizer.get("plan", "free"),
     }
