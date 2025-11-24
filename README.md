@@ -35,6 +35,7 @@ graph LR
     D -->|Enqueue| F[SQS Queue]
     F -->|Trigger| G[Worker Lambda]
     G -->|Read Event| E
+    G -->|Read Webhook Secret| C
     G -->|Deliver with<br/>HMAC| H[Tenant Webhook<br/>Endpoint]
     F -->|After 5 Retries| I[Dead Letter<br/>Queue]
     I -.->|Manual Requeue| J[DLQ Processor<br/>Lambda]
@@ -89,7 +90,9 @@ sequenceDiagram
 
     SQS->>Worker: Trigger with Message
     Worker->>DB: Get Event Details
-    DB-->>Worker: Event + Tenant Config
+    DB-->>Worker: Event (payload, targetUrl)
+    Worker->>DB: Get Tenant Config
+    DB-->>Worker: Tenant Config (webhookSecret)
     Worker->>Worker: Generate HMAC Signature
     Worker->>Tenant: POST Webhook + Stripe-Signature
 
