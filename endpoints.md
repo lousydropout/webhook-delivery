@@ -4,7 +4,7 @@
 
 **Base URL:** `https://hooks.vincentchan.cloud`
 
-### Event Ingestion
+### Event Management
 
 #### Create Event
 
@@ -60,6 +60,369 @@ curl -X POST https://hooks.vincentchan.cloud/v1/events \
     "currency": "USD"
   }'
 ```
+
+---
+
+#### List Events
+
+```http
+GET /v1/events
+```
+
+List all events for the authenticated tenant with optional filtering and pagination.
+
+**Headers:**
+- `Authorization: Bearer <api-key>` (required)
+
+**Query Parameters:**
+- `status` (optional) - Filter by event status: `PENDING`, `DELIVERED`, or `FAILED`
+- `limit` (optional) - Maximum number of events to return (default: 50, max: 100)
+- `next_token` (optional) - Pagination token from previous response
+
+**Response:**
+
+Status: `200 OK`
+
+```json
+{
+  "events": [
+    {
+      "event_id": "evt_abc123",
+      "status": "DELIVERED",
+      "created_at": "1700000000",
+      "attempts": 1,
+      "last_attempt_at": "1700000010"
+    }
+  ],
+  "next_token": "eyJ0ZW5hbnRJZCI6...",
+  "total_count": 1
+}
+```
+
+**Errors:**
+
+- `401 Unauthorized` - Invalid or missing API key
+- `400 Bad Request` - Invalid status or limit parameter
+
+**Example:**
+
+```bash
+# List all events
+curl -X GET "https://hooks.vincentchan.cloud/v1/events" \
+  -H "Authorization: Bearer tenant_acme_live_abc123"
+
+# List only failed events
+curl -X GET "https://hooks.vincentchan.cloud/v1/events?status=FAILED" \
+  -H "Authorization: Bearer tenant_acme_live_abc123"
+
+# Paginated request
+curl -X GET "https://hooks.vincentchan.cloud/v1/events?limit=10&next_token=eyJ0ZW5hbnRJZCI6..." \
+  -H "Authorization: Bearer tenant_acme_live_abc123"
+```
+
+---
+
+#### Get Event Details
+
+```http
+GET /v1/events/{event_id}
+```
+
+Retrieve detailed information about a specific event.
+
+**Headers:**
+- `Authorization: Bearer <api-key>` (required)
+
+**Path Parameters:**
+- `event_id` - The unique event identifier
+
+**Response:**
+
+Status: `200 OK`
+
+```json
+{
+  "event": {
+    "event_id": "evt_abc123",
+    "status": "DELIVERED",
+    "created_at": "1700000000",
+    "payload": {
+      "event": "user.signup",
+      "user_id": "123"
+    },
+    "target_url": "https://example.com/webhook",
+    "attempts": 1,
+    "last_attempt_at": "1700000010",
+    "error_message": null
+  }
+}
+```
+
+**Errors:**
+
+- `401 Unauthorized` - Invalid or missing API key
+- `404 Not Found` - Event not found or does not belong to authenticated tenant
+
+**Example:**
+
+```bash
+curl -X GET "https://hooks.vincentchan.cloud/v1/events/evt_abc123" \
+  -H "Authorization: Bearer tenant_acme_live_abc123"
+```
+
+---
+
+#### Update Event
+
+```http
+PATCH /v1/events/{event_id}
+```
+
+Update an event's mutable fields. Currently supports retrying failed events by setting status to `PENDING`.
+
+**Headers:**
+- `Authorization: Bearer <api-key>` (required)
+- `Content-Type: application/json` (required)
+
+**Path Parameters:**
+- `event_id` - The unique event identifier
+
+**Request Body:**
+
+```json
+{
+  "status": "PENDING"
+}
+```
+
+**Response:**
+
+Status: `200 OK`
+
+```json
+{
+  "event_id": "evt_abc123",
+  "status": "PENDING",
+  "created_at": "1700000000",
+  "payload": {...},
+  "target_url": "https://example.com/webhook",
+  "attempts": 0,
+  "last_attempt_at": null,
+  "error_message": null
+}
+```
+
+**Errors:**
+
+- `400 Bad Request` - Invalid status transition (only FAILED events can be retried)
+- `401 Unauthorized` - Invalid or missing API key
+- `404 Not Found` - Event not found or does not belong to authenticated tenant
+- `500 Internal Server Error` - Failed to requeue event
+
+**Example:**
+
+```bash
+# Retry a failed event
+curl -X PATCH "https://hooks.vincentchan.cloud/v1/events/evt_abc123" \
+  -H "Authorization: Bearer tenant_acme_live_abc123" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "PENDING"}'
+```
+
+---
+
+### Tenant Management
+
+#### Create Tenant
+
+```http
+POST /v1/tenants
+```
+
+Create a new tenant with auto-generated API key and webhook secret.
+
+**Headers:**
+- `Authorization: Bearer <api-key>` (required)
+- `Content-Type: application/json` (required)
+
+**Request Body:**
+
+```json
+{
+  "tenant_id": "acme",
+  "target_url": "https://example.com/webhook",
+  "webhook_secret": "whsec_optional_secret"
+}
+```
+
+**Fields:**
+- `tenant_id` (required) - Unique tenant identifier (lowercase alphanumeric + hyphens, 3-50 characters)
+- `target_url` (required) - Webhook delivery URL (must start with `http://` or `https://`)
+- `webhook_secret` (optional) - HMAC secret for signature validation (auto-generated if omitted)
+
+**Response:**
+
+Status: `201 Created`
+
+```json
+{
+  "tenant_id": "acme",
+  "api_key": "tenant_acme_key",
+  "target_url": "https://example.com/webhook",
+  "webhook_secret": "whsec_abc123...",
+  "created_at": "1700000000",
+  "message": "Tenant created successfully. Store your API key and webhook secret securely."
+}
+```
+
+**Errors:**
+
+- `401 Unauthorized` - Invalid or missing API key
+- `409 Conflict` - Tenant with this ID already exists
+- `422 Unprocessable Entity` - Invalid tenant_id format or target_url format
+- `500 Internal Server Error` - Failed to create tenant
+
+**Example:**
+
+```bash
+curl -X POST https://hooks.vincentchan.cloud/v1/tenants \
+  -H "Authorization: Bearer tenant_existing_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "acme",
+    "target_url": "https://example.com/webhook"
+  }'
+```
+
+**Security Note:** The API key and webhook secret are only returned once on creation. Store them securely as they cannot be retrieved later.
+
+---
+
+#### Get Tenant Details
+
+```http
+GET /v1/tenants/{tenant_id}
+```
+
+Retrieve tenant configuration details. Webhook secret is excluded for security.
+
+**Headers:**
+- `Authorization: Bearer <api-key>` (required)
+
+**Path Parameters:**
+- `tenant_id` - Tenant identifier
+
+**Response:**
+
+Status: `200 OK`
+
+```json
+{
+  "tenant": {
+    "tenant_id": "acme",
+    "target_url": "https://example.com/webhook",
+    "created_at": "1700000000",
+    "updated_at": "1700000100"
+  }
+}
+```
+
+**Errors:**
+
+- `401 Unauthorized` - Invalid or missing API key
+- `403 Forbidden` - Access denied (can only access own tenant)
+- `404 Not Found` - Tenant not found
+
+**Example:**
+
+```bash
+curl -X GET "https://hooks.vincentchan.cloud/v1/tenants/acme" \
+  -H "Authorization: Bearer tenant_acme_key"
+```
+
+
+---
+
+#### Update Tenant Configuration
+
+```http
+PATCH /v1/tenants/{tenant_id}
+```
+
+Update tenant webhook configuration (target URL and/or webhook secret).
+
+**Headers:**
+- `Authorization: Bearer <api-key>` (required)
+- `Content-Type: application/json` (required)
+
+**Path Parameters:**
+- `tenant_id` - Tenant identifier
+
+**Request Body:**
+
+```json
+{
+  "target_url": "https://new-url.com/webhook",
+  "webhook_secret": "whsec_new_secret"
+}
+```
+
+**Fields:**
+- `target_url` (optional) - New webhook delivery URL
+- `webhook_secret` (optional) - New HMAC secret for signature validation
+
+At least one field must be provided.
+
+**Response:**
+
+Status: `200 OK`
+
+```json
+{
+  "tenant_id": "acme",
+  "target_url": "https://new-url.com/webhook",
+  "updated_at": "1700000200",
+  "message": "Tenant configuration updated successfully"
+}
+```
+
+**Errors:**
+
+- `400 Bad Request` - No fields provided for update
+- `401 Unauthorized` - Invalid or missing API key
+- `403 Forbidden` - Access denied (can only update own tenant)
+- `404 Not Found` - Tenant not found
+- `500 Internal Server Error` - Failed to update tenant configuration
+
+**Example:**
+
+```bash
+# Update webhook URL
+curl -X PATCH "https://hooks.vincentchan.cloud/v1/tenants/acme" \
+  -H "Authorization: Bearer tenant_acme_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_url": "https://new-url.com/webhook"
+  }'
+
+# Update webhook secret
+curl -X PATCH "https://hooks.vincentchan.cloud/v1/tenants/acme" \
+  -H "Authorization: Bearer tenant_acme_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook_secret": "whsec_new_secret"
+  }'
+```
+
+**Security Note:** Updating `webhook_secret` will invalidate signatures on in-flight webhooks. Changes take effect immediately for new events.
+
+
+## Migration Notes
+
+**Note**: The deprecated endpoints (`POST /v1/events/{event_id}/retry` and `PATCH /v1/tenants/current`) have been removed. Please use the RESTful alternatives:
+
+- **Event Retry**: Use `PATCH /v1/events/{event_id}` with `{"status": "PENDING"}`
+- **Tenant Configuration**: Use `PATCH /v1/tenants/{tenant_id}`
 
 ---
 

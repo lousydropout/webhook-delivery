@@ -5,10 +5,12 @@ import sys
 import os
 
 # Adjust path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'api'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "api"))
 
 # Set environment variables before importing the app
-os.environ["EVENTS_QUEUE_URL"] = "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
+os.environ["EVENTS_QUEUE_URL"] = (
+    "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
+)
 os.environ["EVENTS_TABLE"] = "test-events-table"
 os.environ["TENANT_API_KEYS_TABLE"] = "test-api-keys-table"
 
@@ -37,7 +39,7 @@ def mock_get_tenant_from_context():
             "tenantId": "test_tenant",
             "targetUrl": "https://example.com/webhook",
             "webhookSecret": "test_secret",
-            "isActive": True
+            "isActive": True,
         }
         yield mock
 
@@ -46,10 +48,13 @@ def mock_get_tenant_from_context():
 def client():
     """FastAPI test client"""
     from main import app
+
     return TestClient(app)
 
 
-def test_create_event(client, mock_sqs, mock_create_event, mock_get_tenant_from_context):
+def test_create_event(
+    client, mock_sqs, mock_create_event, mock_get_tenant_from_context
+):
     """Test event creation with authorizer context"""
     response = client.post(
         "/v1/events",
@@ -65,7 +70,7 @@ def test_create_event(client, mock_sqs, mock_create_event, mock_get_tenant_from_
     mock_create_event.assert_called_once_with(
         "test_tenant",
         {"event_type": "test.event", "data": "foo"},
-        "https://example.com/webhook"
+        "https://example.com/webhook",
     )
 
     # Verify SQS message was sent
@@ -88,7 +93,9 @@ def test_create_event_missing_auth_context(client, mock_sqs, mock_create_event):
     assert "Authentication error" in response.json()["detail"]
 
 
-def test_create_event_sqs_failure(client, mock_sqs, mock_create_event, mock_get_tenant_from_context):
+def test_create_event_sqs_failure(
+    client, mock_sqs, mock_create_event, mock_get_tenant_from_context
+):
     """Test event creation when SQS fails"""
     mock_sqs.send_message.side_effect = Exception("SQS error")
 

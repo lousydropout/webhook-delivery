@@ -17,20 +17,21 @@
     },
     {
       "key": "api_key",
-      "value": "tenant_test-tenant_key",
+      "value": "",
       "type": "string",
-      "description": "Your API key from deployment"
+      "description": "Auto-populated when creating a tenant via '2. Tenant Management → Create Tenant'. For initial tenant creation, you may need to set a default/admin API key first (in production, tenant creation would be admin-only or handled via signup flow)."
     },
     {
       "key": "tenant_id",
-      "value": "test-tenant",
-      "type": "string"
+      "value": "",
+      "type": "string",
+      "description": "Auto-populated when creating a tenant via '2. Tenant Management → Create Tenant'"
     },
     {
       "key": "webhook_secret",
-      "value": "whsec_test123",
+      "value": "",
       "type": "string",
-      "description": "Webhook secret for HMAC signature generation"
+      "description": "Auto-populated when creating a tenant via '2. Tenant Management → Create Tenant'. Used for HMAC signature generation."
     },
     {
       "key": "event_id",
@@ -50,8 +51,13 @@
             "header": [],
             "url": {
               "raw": "{{api_base_url}}/v1/openapi.json",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "openapi.json"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "openapi.json"
+              ]
             },
             "description": "Get the OpenAPI 3.0 schema for the API"
           }
@@ -63,8 +69,13 @@
             "header": [],
             "url": {
               "raw": "{{api_base_url}}/v1/docs",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "docs"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "docs"
+              ]
             },
             "description": "Open Swagger UI documentation (browser only)"
           }
@@ -76,8 +87,13 @@
             "header": [],
             "url": {
               "raw": "{{api_base_url}}/v1/redoc",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "redoc"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "redoc"
+              ]
             },
             "description": "Open ReDoc documentation (browser only)"
           }
@@ -86,10 +102,288 @@
       "description": "Public API documentation endpoints (no authentication required)"
     },
     {
-      "name": "2. Event Ingestion",
+      "name": "2. Tenant Management",
       "item": [
         {
-          "name": "Create Event - User Signup",
+          "name": "Create Tenant",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201 Created', function() {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "pm.test('Tenant created with API key and secret', function() {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.tenant_id).to.be.a('string');",
+                  "    pm.expect(response.api_key).to.be.a('string');",
+                  "    pm.expect(response.webhook_secret).to.be.a('string');",
+                  "    pm.expect(response.api_key).to.include('tenant_');",
+                  "    pm.expect(response.webhook_secret).to.include('whsec_');",
+                  "});",
+                  "",
+                  "// Auto-save tenant credentials for use in subsequent requests",
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('tenant_id', response.tenant_id);",
+                  "    pm.collectionVariables.set('api_key', response.api_key);",
+                  "    pm.collectionVariables.set('webhook_secret', response.webhook_secret);",
+                  "    console.log('Tenant credentials saved:', {",
+                  "        tenant_id: response.tenant_id,",
+                  "        api_key: response.api_key,",
+                  "        webhook_secret: response.webhook_secret",
+                  "    });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"demo-customer-{{$timestamp}}\",\n  \"target_url\": \"https://receiver.vincentchan.cloud/demo-customer/webhook\"\n}"
+            },
+            "url": {
+              "raw": "{{api_base_url}}/v1/tenants",
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "tenants"
+              ]
+            },
+            "description": "Create a new tenant with auto-generated API key and webhook secret. The tenant_id must be lowercase alphanumeric with hyphens. Returns 409 Conflict if tenant already exists.\n\n**Important**: This request automatically saves the returned api_key, tenant_id, and webhook_secret to collection variables for use in subsequent requests."
+          }
+        },
+        {
+          "name": "Get Tenant Details",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Tenant details returned', function() {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.tenant).to.be.an('object');",
+                  "    pm.expect(response.tenant.tenant_id).to.be.a('string');",
+                  "    pm.expect(response.tenant.target_url).to.be.a('string');",
+                  "    pm.expect(response.tenant.webhook_secret).to.be.undefined;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{api_base_url}}/v1/tenants/{{tenant_id}}",
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "tenants",
+                "{{tenant_id}}"
+              ]
+            },
+            "description": "Get tenant details by tenant ID. Returns tenant configuration (excluding webhook secret for security). Users can only access their own tenant details."
+          }
+        },
+        {
+          "name": "Update Tenant Config - URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Configuration updated', function() {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.message).to.include('updated');",
+                  "    pm.expect(response.target_url).to.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_url\": \"https://receiver.vincentchan.cloud/{{tenant_id}}/webhook\"\n}"
+            },
+            "url": {
+              "raw": "{{api_base_url}}/v1/tenants/{{tenant_id}}",
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "tenants",
+                "{{tenant_id}}"
+              ]
+            },
+            "description": "Update tenant webhook configuration by tenant ID. Users can only update their own tenant configuration."
+          }
+        },
+        {
+          "name": "Update Webhook Secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Secret updated', function() {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.message).to.include('updated');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"webhook_secret\": \"whsec_{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}\"\n}"
+            },
+            "url": {
+              "raw": "{{api_base_url}}/v1/tenants/{{tenant_id}}",
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "tenants",
+                "{{tenant_id}}"
+              ]
+            },
+            "description": "Update webhook secret using RESTful endpoint. Rotate webhook secret for HMAC signature validation."
+          }
+        },
+        {
+          "name": "Update Both URL and Secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Both fields updated', function() {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.message).to.include('updated');",
+                  "    pm.expect(response.target_url).to.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_key}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_url\": \"https://receiver.vincentchan.cloud/{{tenant_id}}/webhook\",\n  \"webhook_secret\": \"whsec_{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}\"\n}"
+            },
+            "url": {
+              "raw": "{{api_base_url}}/v1/tenants/{{tenant_id}}",
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "tenants",
+                "{{tenant_id}}"
+              ]
+            },
+            "description": "Update both webhook URL and secret simultaneously using RESTful endpoint."
+          }
+        }
+      ],
+      "description": "Manage tenant webhook configuration"
+    },
+    {
+      "name": "3. Event Ingestion",
+      "item": [
+        {
+          "name": "Create Event - User Signup Example",
           "event": [
             {
               "listen": "test",
@@ -141,10 +435,15 @@
             },
             "url": {
               "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ]
             },
-            "description": "Create a new event for webhook delivery. Returns event_id and status."
+            "description": "Create a webhook event representing a user signup. This creates an event (not a tenant) - the payload will be delivered to your tenant's webhook URL. Returns event_id and status.\n\nNote: To create a new tenant, use POST /v1/tenants instead."
           }
         },
         {
@@ -183,8 +482,13 @@
             },
             "url": {
               "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ]
             },
             "description": "Example payment event"
           }
@@ -225,8 +529,13 @@
             },
             "url": {
               "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ]
             },
             "description": "Example order creation event"
           }
@@ -268,8 +577,13 @@
             ],
             "url": {
               "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ]
             },
             "description": "List all events for authenticated tenant"
           }
@@ -287,8 +601,13 @@
             ],
             "url": {
               "raw": "{{api_base_url}}/v1/events?status=FAILED&limit=20",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"],
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ],
               "query": [
                 {
                   "key": "status",
@@ -316,14 +635,20 @@
             ],
             "url": {
               "raw": "{{api_base_url}}/v1/events/{{event_id}}",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events", "{{event_id}}"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events",
+                "{{event_id}}"
+              ]
             },
             "description": "Get detailed information about a specific event (uses event_id from previous response)"
           }
         },
         {
-          "name": "Retry Failed Event",
+          "name": "Update Event - Retry",
           "event": [
             {
               "listen": "test",
@@ -333,9 +658,10 @@
                   "    pm.response.to.have.status(200);",
                   "});",
                   "",
-                  "pm.test('Event status is PENDING after retry', function() {",
+                  "pm.test('Event status is PENDING after update', function() {",
                   "    const response = pm.response.json();",
                   "    pm.expect(response.status).to.equal('PENDING');",
+                  "    pm.expect(response.attempts).to.equal(0);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -343,20 +669,35 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PATCH",
             "header": [
               {
                 "key": "Authorization",
                 "value": "Bearer {{api_key}}",
                 "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
               }
             ],
-            "url": {
-              "raw": "{{api_base_url}}/v1/events/{{event_id}}/retry",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events", "{{event_id}}", "retry"]
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"PENDING\"\n}"
             },
-            "description": "Manually retry a failed event (only works for FAILED events)"
+            "url": {
+              "raw": "{{api_base_url}}/v1/events/{{event_id}}",
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events",
+                "{{event_id}}"
+              ]
+            },
+            "description": "Update event status using PATCH. Set status to PENDING to retry a FAILED event. Returns full event object."
           }
         },
         {
@@ -376,8 +717,13 @@
             },
             "url": {
               "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ]
             },
             "description": "Should return 401 Unauthorized"
           }
@@ -404,8 +750,13 @@
             },
             "url": {
               "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
+              "host": [
+                "{{api_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ]
             },
             "description": "Should return 403 Forbidden"
           }
@@ -414,7 +765,7 @@
       "description": "Create and manage events for webhook delivery"
     },
     {
-      "name": "3. Webhook Receiver",
+      "name": "4. Webhook Receiver",
       "item": [
         {
           "name": "Health Check",
@@ -423,8 +774,12 @@
             "header": [],
             "url": {
               "raw": "{{receiver_base_url}}/health",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["health"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
             },
             "description": "Check receiver Lambda health status"
           }
@@ -436,8 +791,12 @@
             "header": [],
             "url": {
               "raw": "{{receiver_base_url}}/docs",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["docs"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "docs"
+              ]
             },
             "description": "View Swagger UI for webhook receiver"
           }
@@ -508,8 +867,13 @@
             },
             "url": {
               "raw": "{{receiver_base_url}}/{{tenant_id}}/webhook",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "webhook"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "{{tenant_id}}",
+                "webhook"
+              ]
             },
             "description": "Send webhook with valid HMAC signature (auto-generated in pre-request script)"
           }
@@ -536,8 +900,13 @@
             },
             "url": {
               "raw": "{{receiver_base_url}}/{{tenant_id}}/webhook",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "webhook"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "{{tenant_id}}",
+                "webhook"
+              ]
             },
             "description": "Should return 401 Unauthorized"
           }
@@ -559,8 +928,13 @@
             },
             "url": {
               "raw": "{{receiver_base_url}}/{{tenant_id}}/webhook",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "webhook"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "{{tenant_id}}",
+                "webhook"
+              ]
             },
             "description": "Should return 401 Unauthorized"
           }
@@ -609,8 +983,13 @@
             },
             "url": {
               "raw": "{{receiver_base_url}}/nonexistent-tenant/webhook",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["nonexistent-tenant", "webhook"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "nonexistent-tenant",
+                "webhook"
+              ]
             },
             "description": "Should return 404 Not Found"
           }
@@ -622,8 +1001,13 @@
             "header": [],
             "url": {
               "raw": "{{receiver_base_url}}/{{tenant_id}}/status",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "status"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "{{tenant_id}}",
+                "status"
+              ]
             },
             "description": "Get webhook reception status for tenant (enabled/disabled)"
           }
@@ -635,8 +1019,13 @@
             "header": [],
             "url": {
               "raw": "{{receiver_base_url}}/{{tenant_id}}/disable",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "disable"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "{{tenant_id}}",
+                "disable"
+              ]
             },
             "description": "Disable webhook reception for tenant (webhooks will return 503)"
           }
@@ -648,266 +1037,19 @@
             "header": [],
             "url": {
               "raw": "{{receiver_base_url}}/{{tenant_id}}/enable",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["{{tenant_id}}", "enable"]
+              "host": [
+                "{{receiver_base_url}}"
+              ],
+              "path": [
+                "{{tenant_id}}",
+                "enable"
+              ]
             },
             "description": "Enable webhook reception for tenant (resume accepting webhooks)"
           }
         }
       ],
       "description": "Test webhook receiver endpoints with HMAC signature validation"
-    },
-    {
-      "name": "4. End-to-End Flow",
-      "item": [
-        {
-          "name": "Step 1: Create Event",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "if (pm.response.code === 201) {",
-                  "    const response = pm.response.json();",
-                  "    pm.collectionVariables.set('event_id', response.event_id);",
-                  "    console.log('✓ Event created:', response.event_id);",
-                  "    console.log('⏳ Wait 15-20 seconds for webhook delivery...');",
-                  "}"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{api_key}}",
-                "type": "text"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event\": \"e2e.test\",\n  \"test_id\": \"{{$randomUUID}}\",\n  \"timestamp\": \"{{$timestamp}}\",\n  \"message\": \"End-to-end test event\"\n}"
-            },
-            "url": {
-              "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
-            },
-            "description": "Step 1: Create event via API\n\n⏳ Wait 15-20 seconds before running Step 2"
-          }
-        },
-        {
-          "name": "Step 2: Check Receiver Logs (Manual)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "https://console.aws.amazon.com/cloudwatch/home#logsV2:log-groups/log-group/$252Faws$252Flambda$252FVincent-TriggerApi-WebhookReceiver",
-              "protocol": "https",
-              "host": ["console", "aws", "amazon", "com"],
-              "path": [
-                "cloudwatch",
-                "home"
-              ],
-              "hash": "logsV2:log-groups/log-group/$252Faws$252Flambda$252FVincent-TriggerApi-WebhookReceiver"
-            },
-            "description": "Manual step: Check CloudWatch Logs to verify webhook was received\n\nAlternatively, use AWS CLI:\n```bash\naws logs tail /aws/lambda/Vincent-TriggerApi-WebhookReceiver --follow\n```"
-          }
-        }
-      ],
-      "description": "Complete end-to-end test flow:\n1. Create event via API\n2. Wait 15-20 seconds for async processing\n3. Webhook delivered to receiver\n4. Check logs to verify"
-    },
-    {
-      "name": "5. Testing & Monitoring",
-      "item": [
-        {
-          "name": "API Health (Root)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{api_base_url}}/",
-              "host": ["{{api_base_url}}"],
-              "path": [""]
-            },
-            "description": "Check API Gateway root endpoint"
-          }
-        },
-        {
-          "name": "Receiver Health",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{receiver_base_url}}/health",
-              "host": ["{{receiver_base_url}}"],
-              "path": ["health"]
-            },
-            "description": "Check webhook receiver health"
-          }
-        },
-        {
-          "name": "Bulk Create Events (Load Test)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('Status is 201', function() {",
-                  "    pm.response.to.have.status(201);",
-                  "});",
-                  "",
-                  "// Run this request multiple times to test concurrent processing",
-                  "console.log('Event created. Run this 10-20 times to test load.');"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{api_key}}",
-                "type": "text"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event\": \"load.test\",\n  \"test_id\": \"{{$randomUUID}}\",\n  \"timestamp\": \"{{$timestamp}}\",\n  \"iteration\": {{$randomInt}}\n}"
-            },
-            "url": {
-              "raw": "{{api_base_url}}/v1/events",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "events"]
-            },
-            "description": "Use Postman Runner to execute this 10-20 times for load testing"
-          }
-        }
-      ],
-      "description": "Health checks and load testing endpoints"
-    },
-    {
-      "name": "6. Tenant Configuration",
-      "item": [
-        {
-          "name": "Update Webhook URL",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('Status is 200', function() {",
-                  "    pm.response.to.have.status(200);",
-                  "});",
-                  "",
-                  "pm.test('Configuration updated', function() {",
-                  "    const response = pm.response.json();",
-                  "    pm.expect(response.message).to.include('updated');",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{api_key}}",
-                "type": "text"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"target_url\": \"https://receiver.vincentchan.cloud/{{tenant_id}}/webhook\"\n}"
-            },
-            "url": {
-              "raw": "{{api_base_url}}/v1/tenants/current",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "tenants", "current"]
-            },
-            "description": "Update webhook delivery URL for current tenant"
-          }
-        },
-        {
-          "name": "Update Webhook Secret",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{api_key}}",
-                "type": "text"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"webhook_secret\": \"whsec_{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}\"\n}"
-            },
-            "url": {
-              "raw": "{{api_base_url}}/v1/tenants/current",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "tenants", "current"]
-            },
-            "description": "Rotate webhook secret for HMAC signature validation"
-          }
-        },
-        {
-          "name": "Update Both URL and Secret",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{api_key}}",
-                "type": "text"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"target_url\": \"https://receiver.vincentchan.cloud/{{tenant_id}}/webhook\",\n  \"webhook_secret\": \"whsec_{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}{{$randomAlphaNumeric}}\"\n}"
-            },
-            "url": {
-              "raw": "{{api_base_url}}/v1/tenants/current",
-              "host": ["{{api_base_url}}"],
-              "path": ["v1", "tenants", "current"]
-            },
-            "description": "Update both webhook URL and secret simultaneously"
-          }
-        }
-      ],
-      "description": "Manage tenant webhook configuration"
     }
   ],
   "auth": {

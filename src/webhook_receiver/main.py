@@ -40,7 +40,7 @@ def get_webhook_secret_for_tenant(tenant_id: str) -> Optional[str]:
     try:
         response = tenant_api_keys_table.scan(
             FilterExpression="tenantId = :tid",
-            ExpressionAttributeValues={":tid": tenant_id}
+            ExpressionAttributeValues={":tid": tenant_id},
         )
 
         items = response.get("Items", [])
@@ -68,7 +68,9 @@ def set_tenant_state(tenant_id: str, enabled: bool) -> None:
     Updates in-memory cache for this Lambda container.
     """
     tenant_state_cache[tenant_id] = enabled
-    print(f"Tenant {tenant_id} webhook reception {'enabled' if enabled else 'disabled'}")
+    print(
+        f"Tenant {tenant_id} webhook reception {'enabled' if enabled else 'disabled'}"
+    )
 
 
 def verify_signature(payload: str, signature_header: str, webhook_secret: str) -> bool:
@@ -97,7 +99,7 @@ def verify_signature(payload: str, signature_header: str, webhook_secret: str) -
         return False
 
 
-@app.post("/{tenant_id}/webhook")
+@app.post("/{tenant_id}/webhook", tags=["Webhooks"])
 async def receive_webhook(
     tenant_id: str,
     request: Request,
@@ -110,7 +112,9 @@ async def receive_webhook(
     # Check if tenant webhook reception is enabled
     if not is_tenant_enabled(tenant_id):
         print(f"Webhook reception disabled for tenant: {tenant_id}")
-        raise HTTPException(status_code=503, detail="Webhook reception temporarily disabled")
+        raise HTTPException(
+            status_code=503, detail="Webhook reception temporarily disabled"
+        )
 
     # Validate signature header presence
     if not stripe_signature:
@@ -143,7 +147,7 @@ async def receive_webhook(
     return {"status": "received", "tenant_id": tenant_id}
 
 
-@app.post("/{tenant_id}/enable")
+@app.post("/{tenant_id}/enable", tags=["Receiver Management"])
 async def enable_webhook_reception(tenant_id: str):
     """
     Enable webhook reception for a tenant.
@@ -159,11 +163,11 @@ async def enable_webhook_reception(tenant_id: str):
     return {
         "tenant_id": tenant_id,
         "webhook_reception": "enabled",
-        "message": "Webhook reception has been enabled"
+        "message": "Webhook reception has been enabled",
     }
 
 
-@app.post("/{tenant_id}/disable")
+@app.post("/{tenant_id}/disable", tags=["Receiver Management"])
 async def disable_webhook_reception(tenant_id: str):
     """
     Disable webhook reception for a tenant.
@@ -180,11 +184,11 @@ async def disable_webhook_reception(tenant_id: str):
     return {
         "tenant_id": tenant_id,
         "webhook_reception": "disabled",
-        "message": "Webhook reception has been disabled. Webhooks will return 503 until re-enabled."
+        "message": "Webhook reception has been disabled. Webhooks will return 503 until re-enabled.",
     }
 
 
-@app.get("/{tenant_id}/status")
+@app.get("/{tenant_id}/status", tags=["Receiver Management"])
 async def get_webhook_status(tenant_id: str):
     """
     Get webhook reception status for a tenant.
@@ -200,11 +204,11 @@ async def get_webhook_status(tenant_id: str):
     return {
         "tenant_id": tenant_id,
         "webhook_reception": "enabled" if enabled else "disabled",
-        "accepts_webhooks": enabled
+        "accepts_webhooks": enabled,
     }
 
 
-@app.get("/health")
+@app.get("/health", tags=["Health Checks"])
 async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy", "service": "webhook-receiver"}

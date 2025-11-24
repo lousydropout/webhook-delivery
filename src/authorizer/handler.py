@@ -25,7 +25,9 @@ def get_tenant_from_api_key(api_key: str) -> Optional[Dict]:
         return None
 
 
-def generate_policy(principal_id: str, effect: str, resource: str, context: Dict[str, Any] = None) -> Dict:
+def generate_policy(
+    principal_id: str, effect: str, resource: str, context: Dict[str, Any] = None
+) -> Dict:
     """
     Generate IAM policy document for API Gateway.
 
@@ -40,13 +42,9 @@ def generate_policy(principal_id: str, effect: str, resource: str, context: Dict
         "policyDocument": {
             "Version": "2012-10-17",
             "Statement": [
-                {
-                    "Action": "execute-api:Invoke",
-                    "Effect": effect,
-                    "Resource": resource
-                }
-            ]
-        }
+                {"Action": "execute-api:Invoke", "Effect": effect, "Resource": resource}
+            ],
+        },
     }
 
     if context:
@@ -98,7 +96,7 @@ def handler(event: Dict, context: Any) -> Dict:
         "tenantId": tenant["tenantId"],
         "targetUrl": tenant["targetUrl"],
         "webhookSecret": tenant["webhookSecret"],
-        "isActive": tenant["isActive"]
+        "isActive": tenant["isActive"],
     }
 
     print(f"Authorized tenant: {tenant_id}")

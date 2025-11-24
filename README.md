@@ -182,6 +182,44 @@ curl -X POST https://hooks.vincentchan.cloud/v1/events \
 
 See [Webhook Integration Guide](docs/WEBHOOK_INTEGRATION.md) for complete receiver implementation with signature verification.
 
+### Manage Tenants
+
+The API provides RESTful endpoints for tenant management:
+
+**Create Tenant:**
+
+```bash
+curl -X POST https://hooks.vincentchan.cloud/v1/tenants \
+  -H "Authorization: Bearer <existing-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "new-tenant",
+    "target_url": "https://example.com/webhook"
+  }'
+
+# Response includes API key and webhook secret - store securely!
+```
+
+**Get Tenant Details:**
+
+```bash
+curl -X GET https://hooks.vincentchan.cloud/v1/tenants/new-tenant \
+  -H "Authorization: Bearer tenant_new-tenant_key"
+```
+
+**Update Tenant Configuration:**
+
+```bash
+curl -X PATCH https://hooks.vincentchan.cloud/v1/tenants/new-tenant \
+  -H "Authorization: Bearer tenant_new-tenant_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_url": "https://new-url.com/webhook"
+  }'
+```
+
+See [API Endpoints Documentation](endpoints.md) for complete endpoint reference.
+
 ## Webhook Receiver Lambda
 
 The system includes a production-ready webhook receiver Lambda for end-to-end testing and demonstration. This receiver validates HMAC signatures and can be used as a reference implementation or actual webhook endpoint.
@@ -307,7 +345,7 @@ sequenceDiagram
     API->>SQS: Enqueue {tenantId, eventId}
     API-->>Client: 201 {event_id, status: PENDING}
 
-    Note over Client,Receiver: Step 2: Async Processing (12-18s later)
+    Note over Client,Receiver: Step 2: Async Processing (1-2s later)
     SQS->>Worker: Trigger with Message
     Worker->>DB: Get Event + Tenant Config
     DB-->>Worker: {payload, targetUrl, webhookSecret}
@@ -496,12 +534,30 @@ Each tenant needs:
 - **Webhook Secret**: For HMAC signature generation
 - **Target URL**: Where webhooks will be delivered
 
-Add via DynamoDB or seeding script:
+**Option 1: Programmatic Creation (Recommended)**
+
+Use the RESTful API endpoint:
+
+```bash
+curl -X POST https://hooks.vincentchan.cloud/v1/tenants \
+  -H "Authorization: Bearer <existing-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "acme",
+    "target_url": "https://example.com/webhook"
+  }'
+```
+
+**Option 2: Seeding Script**
 
 ```python
 # scripts/seed_webhooks.py creates test tenants
 python scripts/seed_webhooks.py
 ```
+
+**Option 3: Direct DynamoDB**
+
+Add tenant directly to DynamoDB table `Vincent-TriggerApi-TenantApiKeys`.
 
 ### Event Schema
 
@@ -670,6 +726,7 @@ black .
 
 ## Documentation
 
+- [API Endpoints](endpoints.md) - Complete API reference with migration guide
 - [Webhook Integration Guide](docs/WEBHOOK_INTEGRATION.md) - Receiver implementation
 - [Implementation Plan](thoughts/shared/plans/2025-11-21-webhook-delivery-system-rewrite.md) - Architecture decisions
 

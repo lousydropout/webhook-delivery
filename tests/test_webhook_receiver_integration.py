@@ -31,14 +31,16 @@ class WebhookIntegrationTest:
 
     def test_health_endpoints(self):
         """Test health endpoints for all services"""
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("PHASE 1: Health Check Validation")
-        print("="*70)
+        print("=" * 70)
 
         # Test receiver health endpoint
         print("\n1. Testing webhook receiver health endpoint...")
         response = requests.get(f"{self.receiver_base}/health")
-        assert response.status_code == 200, f"Health check failed: {response.status_code}"
+        assert (
+            response.status_code == 200
+        ), f"Health check failed: {response.status_code}"
         data = response.json()
         assert data["status"] == "healthy", f"Unexpected health status: {data}"
         print(f"   ✓ Receiver health: {data}")
@@ -46,7 +48,9 @@ class WebhookIntegrationTest:
         # Test API docs endpoint (confirms API is responsive)
         print("\n2. Testing API documentation endpoint...")
         response = requests.get(f"{self.api_base}/v1/docs")
-        assert response.status_code == 200, f"Docs endpoint failed: {response.status_code}"
+        assert (
+            response.status_code == 200
+        ), f"Docs endpoint failed: {response.status_code}"
         print(f"   ✓ API docs accessible")
 
         print("\n✅ All health checks passed!")
@@ -65,14 +69,18 @@ class WebhookIntegrationTest:
             json=event_data,
         )
 
-        assert response.status_code == 201, f"Failed to create event: {response.status_code} - {response.text}"
+        assert (
+            response.status_code == 201
+        ), f"Failed to create event: {response.status_code} - {response.text}"
         result = response.json()
         event_id = result["event_id"]
         print(f"   ✓ Event created: {event_id}")
 
         return event_id
 
-    def wait_for_webhook_delivery(self, event_id: str, timeout: int = 30) -> Dict[str, Any]:
+    def wait_for_webhook_delivery(
+        self, event_id: str, timeout: int = 30
+    ) -> Dict[str, Any]:
         """Wait for webhook to be delivered and check status in DynamoDB"""
         print(f"\n4. Waiting for webhook delivery (timeout: {timeout}s)...")
 
@@ -123,14 +131,18 @@ class WebhookIntegrationTest:
 
             events = response.get("events", [])
             if events:
-                print(f"   ✓ Found {len(events)} log entries mentioning event {event_id}")
+                print(
+                    f"   ✓ Found {len(events)} log entries mentioning event {event_id}"
+                )
                 for event in events:
                     message = event["message"].strip()
                     if "Valid webhook received" in message:
                         print(f"   ✓ Receiver log: {message}")
                         return True
             else:
-                print(f"   ⚠ No logs found for event {event_id} (may still be processing)")
+                print(
+                    f"   ⚠ No logs found for event {event_id} (may still be processing)"
+                )
 
         except Exception as e:
             print(f"   ⚠ Could not check logs: {e}")
@@ -155,7 +167,10 @@ class WebhookIntegrationTest:
                 print(f"   ✓ Found {len(events)} log entries in worker logs")
                 for event in events:
                     message = event["message"].strip()
-                    if "delivered successfully" in message.lower() or "status_code: 200" in message.lower():
+                    if (
+                        "delivered successfully" in message.lower()
+                        or "status_code: 200" in message.lower()
+                    ):
                         print(f"   ✓ Worker log: {message}")
                         return True
             else:
@@ -168,9 +183,9 @@ class WebhookIntegrationTest:
 
     def test_complete_flow(self):
         """Test the complete webhook delivery flow"""
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("PHASE 2: End-to-End Webhook Delivery Flow")
-        print("="*70)
+        print("=" * 70)
 
         # Create unique event data
         timestamp = int(time.time())
@@ -188,21 +203,23 @@ class WebhookIntegrationTest:
         event_item = self.wait_for_webhook_delivery(event_id, timeout=30)
 
         # Step 3: Verify event status
-        assert event_item["status"] == "DELIVERED", f"Expected 'delivered', got '{event_item['status']}'"
+        assert (
+            event_item["status"] == "DELIVERED"
+        ), f"Expected 'delivered', got '{event_item['status']}'"
 
         # Step 4: Check logs
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("PHASE 3: Log Verification")
-        print("="*70)
+        print("=" * 70)
 
         time.sleep(2)  # Give logs time to propagate
 
         receiver_logged = self.check_receiver_logs(event_id)
         worker_logged = self.check_worker_logs(event_id)
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("PHASE 4: Test Summary")
-        print("="*70)
+        print("=" * 70)
         print(f"\nEvent ID: {event_id}")
         print(f"Final Status: {event_item['status']}")
         print(f"Attempts: {event_item.get('attempts', 0)}")
@@ -214,9 +231,9 @@ class WebhookIntegrationTest:
 
     def test_concurrent_deliveries(self, count: int = 3):
         """Test multiple concurrent webhook deliveries"""
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print(f"PHASE 5: Concurrent Delivery Test ({count} events)")
-        print("="*70)
+        print("=" * 70)
 
         event_ids = []
         timestamp = int(time.time())
@@ -258,11 +275,11 @@ class WebhookIntegrationTest:
 
 def main():
     """Run all integration tests"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("WEBHOOK RECEIVER INTEGRATION TEST SUITE")
-    print("="*70)
+    print("=" * 70)
     print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*70)
+    print("=" * 70)
 
     test = WebhookIntegrationTest()
 
@@ -277,9 +294,9 @@ def main():
         all_delivered = test.test_concurrent_deliveries(count=3)
 
         # Final summary
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("✅ ALL INTEGRATION TESTS PASSED!")
-        print("="*70)
+        print("=" * 70)
         print("\nValidated:")
         print("  ✓ API event creation with authentication")
         print("  ✓ SQS message queuing")
@@ -298,11 +315,13 @@ def main():
     except Exception as e:
         print(f"\n❌ Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
 
 if __name__ == "__main__":
     import sys
+
     success = main()
     sys.exit(0 if success else 1)

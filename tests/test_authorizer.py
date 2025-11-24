@@ -4,7 +4,7 @@ import sys
 import os
 
 # Add src/authorizer to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'authorizer'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "authorizer"))
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def authorizer_event():
     return {
         "type": "TOKEN",
         "authorizationToken": "Bearer test_key_123",
-        "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abcdef123/prod/POST/events"
+        "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abcdef123/prod/POST/events",
     }
 
 
@@ -55,7 +55,9 @@ def test_authorizer_valid_token(mock_dynamodb_table, authorizer_event, lambda_co
     assert result["context"]["targetUrl"] == "https://example.com/webhook"
 
 
-def test_authorizer_invalid_token(mock_dynamodb_table, authorizer_event, lambda_context):
+def test_authorizer_invalid_token(
+    mock_dynamodb_table, authorizer_event, lambda_context
+):
     """Test authorizer with invalid API key"""
     from handler import handler
 
@@ -100,7 +102,7 @@ def test_authorizer_missing_token(lambda_context):
 
     event = {
         "type": "TOKEN",
-        "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abcdef123/prod/POST/events"
+        "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abcdef123/prod/POST/events",
     }
 
     result = handler(event, lambda_context)

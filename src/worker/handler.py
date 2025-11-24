@@ -7,6 +7,10 @@ def main(event, context):
     """
     Process SQS messages for webhook delivery.
 
+    Triggered by SQS event source with:
+    - Max batching window: 1s (messages processed within 1 second)
+    - Batch size: 10 messages per invocation
+
     SQS will retry failed messages with exponential backoff:
     - Visibility timeout: 60s
     - Max receive count: 5

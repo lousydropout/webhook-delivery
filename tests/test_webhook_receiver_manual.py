@@ -70,7 +70,9 @@ def test_signature_verification():
         hashlib.sha256,
     ).hexdigest()
 
-    assert hmac.compare_digest(expected_signature, extracted_signature), "Valid signature should verify"
+    assert hmac.compare_digest(
+        expected_signature, extracted_signature
+    ), "Valid signature should verify"
     print(f"✓ Valid signature verification works")
 
     # Test with invalid signature
@@ -78,7 +80,9 @@ def test_signature_verification():
     parts = dict(item.split("=") for item in invalid_header.split(","))
     extracted_signature = parts.get("v1")
 
-    assert not hmac.compare_digest(expected_signature, extracted_signature), "Invalid signature should fail"
+    assert not hmac.compare_digest(
+        expected_signature, extracted_signature
+    ), "Invalid signature should fail"
     print(f"✓ Invalid signature rejection works")
 
 
@@ -89,12 +93,12 @@ def generate_curl_commands():
 
     signature = generate_stripe_signature(test_payload, test_secret)
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("CURL TEST COMMANDS")
-    print("="*60)
+    print("=" * 60)
 
     print("\n1. Test health endpoint:")
-    print('curl -v http://localhost:5001/v1/receiver/health')
+    print("curl -v http://localhost:5001/v1/receiver/health")
 
     print("\n2. Test webhook with valid signature:")
     print(f"curl -v -X POST http://localhost:5001/v1/receiver/test-tenant/webhook \\")
@@ -113,7 +117,7 @@ def generate_curl_commands():
     print(f'  -H "Content-Type: application/json" \\')
     print(f"  -d '{test_payload}'")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
 
     return signature, test_payload
 

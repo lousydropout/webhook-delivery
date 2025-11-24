@@ -17,8 +17,8 @@ def create_event(tenant_id: str, payload: Dict[str, Any], target_url: str) -> st
     event_id = f"evt_{uuid.uuid4().hex[:12]}"
     created_at = time.time()
 
-    # TTL: 30 days from now
-    ttl = int(created_at + (30 * 24 * 60 * 60))
+    # TTL: 1 year from now (365 days for auditing purposes)
+    ttl = int(created_at + (365 * 24 * 60 * 60))
 
     item = {
         "tenantId": tenant_id,
@@ -39,7 +39,7 @@ def list_events(
     tenant_id: str,
     status: Optional[str] = None,
     limit: int = 50,
-    last_evaluated_key: Optional[Dict[str, Any]] = None
+    last_evaluated_key: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     List events for a tenant with optional status filtering and pagination.
@@ -155,23 +155,151 @@ def reset_event_for_retry(tenant_id: str, event_id: str) -> bool:
         return False
 
 
-def update_tenant_config(
-    api_key: str,
-    target_url: Optional[str] = None,
-    webhook_secret: Optional[str] = None
+def create_tenant(
+    tenant_id: str, target_url: str, webhook_secret: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Update tenant configuration (webhook URL and/or secret).
+    Create a new tenant with API key.
 
     Args:
-        api_key: API key (partition key in TenantApiKeys table)
+        tenant_id: Unique tenant identifier (e.g., "acme", "globex")
+        target_url: Webhook delivery URL
+        webhook_secret: HMAC secret (auto-generated if not provided)
+
+    Returns:
+        {
+            "tenant_id": "...",
+            "api_key": "tenant_..._key",
+            "target_url": "...",
+            "webhook_secret": "...",
+            "created_at": "..."
+        }
+
+    Raises:
+        ValueError: If tenant already exists
+    """
+    import secrets
+    import string
+
+    tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+
+    # Generate API key
+    api_key = f"tenant_{tenant_id}_key"
+
+    # Generate webhook secret if not provided
+    if not webhook_secret:
+        # Generate 32-character random secret
+        alphabet = string.ascii_letters + string.digits
+        webhook_secret = "whsec_" + "".join(secrets.choice(alphabet) for _ in range(32))
+
+    timestamp = str(int(time.time()))
+
+    try:
+        # Use ConditionExpression to ensure tenant doesn't already exist
+        tenant_api_keys_table.put_item(
+            Item={
+                "apiKey": api_key,
+                "tenantId": tenant_id,
+                "targetUrl": target_url,
+                "webhookSecret": webhook_secret,
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+            },
+            ConditionExpression="attribute_not_exists(apiKey)",
+        )
+
+        return {
+            "tenant_id": tenant_id,
+            "api_key": api_key,
+            "target_url": target_url,
+            "webhook_secret": webhook_secret,
+            "created_at": timestamp,
+        }
+    except tenant_api_keys_table.meta.client.exceptions.ConditionalCheckFailedException:
+        raise ValueError(f"Tenant with ID '{tenant_id}' already exists")
+    except Exception as e:
+        print(f"Error creating tenant {tenant_id}: {e}")
+        raise
+
+
+def get_tenant_by_id(tenant_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get tenant details by tenant ID.
+
+    Uses GSI on tenantId for efficient lookups.
+
+    Args:
+        tenant_id: Tenant identifier
+
+    Returns:
+        Tenant data (excluding webhook secret for security) or None if not found
+    """
+    tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+
+    try:
+        # Use GSI query instead of scan for efficient lookup
+        response = tenant_api_keys_table.query(
+            IndexName="tenantId-index",
+            KeyConditionExpression="tenantId = :tid",
+            ExpressionAttributeValues={":tid": tenant_id},
+        )
+
+        items = response.get("Items", [])
+        if not items:
+            return None
+
+        tenant = items[0]
+
+        # Remove webhook secret from response for security
+        # (only return it on creation or when explicitly updated)
+        tenant_safe = {
+            "tenant_id": tenant["tenantId"],
+            "target_url": tenant["targetUrl"],
+            "created_at": tenant.get("createdAt", ""),
+            "updated_at": tenant.get("updatedAt", ""),
+        }
+
+        return tenant_safe
+    except Exception as e:
+        print(f"Error retrieving tenant {tenant_id}: {e}")
+        return None
+
+
+def update_tenant_config_by_id(
+    tenant_id: str,
+    target_url: Optional[str] = None,
+    webhook_secret: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Update tenant configuration by tenant ID.
+
+    Uses GSI on tenantId to find API key efficiently.
+
+    Args:
+        tenant_id: Tenant identifier
         target_url: New webhook URL (optional)
         webhook_secret: New webhook secret (optional)
 
     Returns:
         Updated tenant configuration
+
+    Raises:
+        ValueError: If tenant not found or no fields to update
     """
     tenant_api_keys_table = dynamodb.Table(os.environ["TENANT_API_KEYS_TABLE"])
+
+    # Use GSI query to find API key for this tenant
+    response = tenant_api_keys_table.query(
+        IndexName="tenantId-index",
+        KeyConditionExpression="tenantId = :tid",
+        ExpressionAttributeValues={":tid": tenant_id},
+    )
+
+    items = response.get("Items", [])
+    if not items:
+        raise ValueError(f"Tenant {tenant_id} not found")
+
+    api_key = items[0]["apiKey"]
 
     # Build update expression dynamically
     update_parts = []
@@ -203,5 +331,5 @@ def update_tenant_config(
         )
         return response["Attributes"]
     except Exception as e:
-        print(f"Error updating tenant config for API key {api_key}: {e}")
+        print(f"Error updating tenant config for tenant {tenant_id}: {e}")
         raise

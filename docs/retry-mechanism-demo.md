@@ -14,9 +14,11 @@ The webhook delivery system includes control endpoints that allow you to tempora
 ## Receiver Control Endpoints
 
 ### GET `/{tenant_id}/status`
+
 Check whether webhook reception is enabled or disabled for a tenant.
 
 **Response:**
+
 ```json
 {
   "tenant_id": "test-tenant",
@@ -26,9 +28,11 @@ Check whether webhook reception is enabled or disabled for a tenant.
 ```
 
 ### POST `/{tenant_id}/disable`
+
 Temporarily disable webhook reception. Incoming webhooks will return `503 Service Unavailable`.
 
 **Response:**
+
 ```json
 {
   "tenant_id": "test-tenant",
@@ -38,9 +42,11 @@ Temporarily disable webhook reception. Incoming webhooks will return `503 Servic
 ```
 
 ### POST `/{tenant_id}/enable`
+
 Re-enable webhook reception after being disabled.
 
 **Response:**
+
 ```json
 {
   "tenant_id": "test-tenant",
@@ -52,6 +58,7 @@ Re-enable webhook reception after being disabled.
 ## Complete Retry Flow Example
 
 ### Step 1: Check Initial Status
+
 ```bash
 curl -X GET https://receiver.vincentchan.cloud/test-tenant/status
 ```
@@ -59,6 +66,7 @@ curl -X GET https://receiver.vincentchan.cloud/test-tenant/status
 Expected: `{"webhook_reception": "enabled", "accepts_webhooks": true}`
 
 ### Step 2: Disable Webhook Reception
+
 ```bash
 curl -X POST https://receiver.vincentchan.cloud/test-tenant/disable
 ```
@@ -66,6 +74,7 @@ curl -X POST https://receiver.vincentchan.cloud/test-tenant/disable
 Expected: `{"webhook_reception": "disabled", "message": "..."}`
 
 ### Step 3: Create Event (Will Fail)
+
 ```bash
 curl -X POST https://hooks.vincentchan.cloud/v1/events \
   -H "Authorization: Bearer YOUR_API_KEY" \
@@ -81,15 +90,18 @@ Expected: `{"event_id": "evt_...", "status": "PENDING"}`
 Save the `event_id` from the response.
 
 ### Step 4: Wait for Delivery Attempt
-Wait 5-10 seconds for the worker Lambda to pick up the event from SQS and attempt delivery.
+
+Wait 1-2 seconds for the worker Lambda to pick up the event from SQS and attempt delivery.
 
 ### Step 5: Verify Event Failed
+
 ```bash
 curl -X GET https://hooks.vincentchan.cloud/v1/events/evt_YOUR_EVENT_ID \
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
 Expected response showing failure:
+
 ```json
 {
   "event": {
@@ -103,6 +115,7 @@ Expected response showing failure:
 ```
 
 ### Step 6: Re-enable Webhook Reception
+
 ```bash
 curl -X POST https://receiver.vincentchan.cloud/test-tenant/enable
 ```
@@ -110,15 +123,19 @@ curl -X POST https://receiver.vincentchan.cloud/test-tenant/enable
 Expected: `{"webhook_reception": "enabled"}`
 
 ### Step 7: Retry Failed Event
+
 ```bash
-curl -X POST https://hooks.vincentchan.cloud/v1/events/evt_YOUR_EVENT_ID/retry \
-  -H "Authorization: Bearer YOUR_API_KEY"
+curl -X PATCH https://hooks.vincentchan.cloud/v1/events/evt_YOUR_EVENT_ID \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "PENDING"}'
 ```
 
-Expected: `{"event_id": "evt_...", "status": "PENDING", "message": "Event requeued for delivery"}`
+Expected: `{"event_id": "evt_...", "status": "PENDING", "attempts": 0, ...}`
 
 ### Step 8: Wait and Verify Success
-Wait 5-10 seconds, then check the event status again:
+
+Wait 1-2 seconds, then check the event status again:
 
 ```bash
 curl -X GET https://hooks.vincentchan.cloud/v1/events/evt_YOUR_EVENT_ID \
@@ -126,6 +143,7 @@ curl -X GET https://hooks.vincentchan.cloud/v1/events/evt_YOUR_EVENT_ID \
 ```
 
 Expected response showing successful delivery:
+
 ```json
 {
   "event": {
@@ -145,14 +163,16 @@ Here's an actual test run demonstrating the flow:
 **Event Created:** `evt_9662694bb566`
 
 **Initial State (Disabled):**
+
 - Receiver disabled
 - Event created and queued
 - Worker attempted delivery → received 503
 - Event status: `FAILED`, attempts: `1`
 
 **After Re-enabling:**
+
 - Receiver enabled via POST /test-tenant/enable
-- Event retried via POST /v1/events/evt_9662694bb566/retry
+- Event retried via PATCH /v1/events/evt_9662694bb566 with {"status": "PENDING"}
 - Event requeued to SQS (attempts reset to 0)
 - Worker attempted delivery again → received 200
 - Final event status: `DELIVERED`, attempts: `2`
@@ -160,13 +180,16 @@ Here's an actual test run demonstrating the flow:
 ## Implementation Details
 
 ### State Management
+
 - Uses in-memory cache in Lambda container (`tenant_state_cache: Dict[str, bool]`)
 - Default state: enabled (accepts webhooks)
 - State persists for Lambda container lifetime
 - No DynamoDB persistence (intentionally temporary for testing)
 
 ### Webhook Endpoint Protection
+
 Located in `src/webhook_receiver/main.py:110-113`:
+
 ```python
 # Check if tenant webhook reception is enabled
 if not is_tenant_enabled(tenant_id):
@@ -175,12 +198,14 @@ if not is_tenant_enabled(tenant_id):
 ```
 
 ### Retry Logic
-Located in `src/api/routes.py:186-260`:
+
+Located in `src/api/routes.py:210-290`:
+
 1. Validates event exists and belongs to tenant
-2. Checks event status is `FAILED`
+2. Accepts status update to "PENDING" via PATCH request
 3. Resets event to `PENDING` in DynamoDB (sets attempts to 0)
 4. Requeues message to SQS
-5. Returns success response
+5. Returns updated event details
 
 ## Use Cases
 
@@ -193,6 +218,7 @@ Located in `src/api/routes.py:186-260`:
 ## Postman Collection
 
 The control endpoints are available in the Postman collection under:
+
 - **3. Webhook Receiver** folder:
   - "Get Webhook Status"
   - "Disable Webhook Reception"
@@ -201,13 +227,16 @@ The control endpoints are available in the Postman collection under:
 ## Architecture Notes
 
 ### Why In-Memory State?
+
 - **Simplicity**: No additional DynamoDB table or attribute needed
 - **Temporary by Design**: State resets when Lambda container recycles
 - **Testing Focus**: Designed for demonstration, not production feature flags
 - **Performance**: Zero DynamoDB overhead for state checks
 
 ### Production Considerations
+
 If you need persistent enable/disable state:
+
 1. Add `webhookReceptionEnabled` boolean to TenantApiKeys table
 2. Check this field in `get_webhook_secret_for_tenant()`
 3. Update control endpoints to modify DynamoDB instead of cache
@@ -215,24 +244,27 @@ If you need persistent enable/disable state:
 
 ## Related Endpoints
 
-- **POST /v1/events** - Create events ([src/api/routes.py:28-58](src/api/routes.py#L28-L58))
-- **GET /v1/events** - List events ([src/api/routes.py:61-132](src/api/routes.py#L61-L132))
-- **GET /v1/events/{event_id}** - Event details ([src/api/routes.py:135-183](src/api/routes.py#L135-L183))
-- **POST /v1/events/{event_id}/retry** - Retry failed event ([src/api/routes.py:186-260](src/api/routes.py#L186-L260))
+- **POST /v1/events** - Create events ([src/api/routes.py:40-82](src/api/routes.py#L40-L82))
+- **GET /v1/events** - List events ([src/api/routes.py:84-157](src/api/routes.py#L84-L157))
+- **GET /v1/events/{event_id}** - Event details ([src/api/routes.py:159-208](src/api/routes.py#L159-L208))
+- **PATCH /v1/events/{event_id}** - Update event (set status to "PENDING" to retry) ([src/api/routes.py:210-290](src/api/routes.py#L210-L290))
 
 ## Troubleshooting
 
 ### Event stays PENDING after retry
+
 - Check SQS queue: `aws sqs get-queue-attributes --queue-url <URL> --attribute-names ApproximateNumberOfMessages`
 - Worker Lambda may be throttled or erroring
 - Check CloudWatch logs for worker Lambda
 
 ### Enable/Disable not working
+
 - State is per-Lambda container
 - If multiple containers exist, you may need to disable multiple times
 - State resets when container recycles (typically after 15-30 minutes of inactivity)
 
 ### 404 on control endpoints
+
 - Ensure using correct tenant_id in URL path
 - Tenant must exist in TenantApiKeys table
 - Verify API Gateway deployment completed successfully

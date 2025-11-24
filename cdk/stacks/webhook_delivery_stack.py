@@ -26,7 +26,6 @@ if not prefix:
     raise ValueError("PREFIX must be set in .env file")
 
 
-
 class WebhookDeliveryStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -83,6 +82,15 @@ class WebhookDeliveryStack(Stack):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=RemovalPolicy.DESTROY,
             point_in_time_recovery=False,
+        )
+
+        # Add GSI for efficient tenantId lookups (used by get_tenant_by_id and update_tenant_config_by_id)
+        self.tenant_api_keys_table.add_global_secondary_index(
+            index_name="tenantId-index",
+            partition_key=dynamodb.Attribute(
+                name="tenantId",
+                type=dynamodb.AttributeType.STRING,
+            ),
         )
 
         # ============================================================
@@ -249,7 +257,7 @@ class WebhookDeliveryStack(Stack):
             lambda_events.SqsEventSource(
                 self.events_queue,
                 batch_size=10,
-                max_batching_window=Duration.seconds(5),
+                max_batching_window=Duration.seconds(1),
             )
         )
 
@@ -410,10 +418,9 @@ class WebhookDeliveryStack(Stack):
             },
         )
 
-        # POST /v1/events/{eventId}/retry - Retry failed event
-        retry_resource = event_id_resource.add_resource("retry")
-        retry_resource.add_method(
-            "POST",
+        # PATCH /v1/events/{eventId} - Update event (replaces retry)
+        event_id_resource.add_method(
+            "PATCH",
             lambda_integration,
             authorization_type=apigateway.AuthorizationType.CUSTOM,
             authorizer=self.token_authorizer,
@@ -421,10 +428,28 @@ class WebhookDeliveryStack(Stack):
 
         # Tenants endpoints
         tenants_resource = v1_resource.add_resource("tenants")
-        current_tenant_resource = tenants_resource.add_resource("current")
 
-        # PATCH /v1/tenants/current - Update tenant config
-        current_tenant_resource.add_method(
+        # POST /v1/tenants - Create tenant
+        tenants_resource.add_method(
+            "POST",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+        )
+
+        # GET /v1/tenants/{tenantId} - Get tenant details
+        # PATCH /v1/tenants/{tenantId} - Update tenant config
+        tenant_id_resource = tenants_resource.add_resource("{tenantId}")
+        tenant_id_resource.add_method(
+            "GET",
+            lambda_integration,
+            authorization_type=apigateway.AuthorizationType.CUSTOM,
+            authorizer=self.token_authorizer,
+            request_parameters={
+                "method.request.path.tenantId": True,
+            },
+        )
+        tenant_id_resource.add_method(
             "PATCH",
             lambda_integration,
             authorization_type=apigateway.AuthorizationType.CUSTOM,
