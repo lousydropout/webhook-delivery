@@ -341,12 +341,10 @@ async def create_new_tenant(
     **Security Note**: Store the API key and webhook secret securely.
     The webhook secret cannot be retrieved later, only rotated.
 
-    Authentication via Bearer token required.
-    In a production system, this would be admin-only or self-service signup.
+    **Public Endpoint**: No authentication required for tenant creation.
+    This enables self-service signup and simplifies demos/testing.
+    In production, consider adding rate limiting or CAPTCHA to prevent abuse.
     """
-    # TODO: Add admin authorization check
-    # For now, any authenticated user can create tenants
-    # In production, this should be restricted to admins or handled via signup flow
 
     try:
         result = create_tenant(

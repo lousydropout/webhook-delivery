@@ -429,12 +429,11 @@ class WebhookDeliveryStack(Stack):
         # Tenants endpoints
         tenants_resource = v1_resource.add_resource("tenants")
 
-        # POST /v1/tenants - Create tenant
+        # POST /v1/tenants - Create tenant (public, no auth required)
         tenants_resource.add_method(
             "POST",
             lambda_integration,
-            authorization_type=apigateway.AuthorizationType.CUSTOM,
-            authorizer=self.token_authorizer,
+            authorization_type=apigateway.AuthorizationType.NONE,
         )
 
         # GET /v1/tenants/{tenantId} - Get tenant details
